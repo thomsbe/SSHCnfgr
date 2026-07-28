@@ -1,6 +1,6 @@
 # SSHCnfgr
 
-SSHCnfgr ist ein kleines Demo- und Lernprojekt fuer Python-TUIs.
+SSHCnfgr ist mein persoenliches Demo- und Lernprojekt fuer Python-TUIs.
 
 Das Projekt zeigt, wie man mit Textual, Click und Loguru ein echtes, aber ueberschaubares Tool baut:
 
@@ -8,7 +8,15 @@ Das Projekt zeigt, wie man mit Textual, Click und Loguru ein echtes, aber uebers
 - daraus eine OpenSSH-Config generieren
 - bestehende SSH-Configs importieren
 
-Zielgruppe: Leute, die TUI-Patterns in Python praktisch lernen wollen.
+Ziel ist nicht, ein Produkt fuer jedermann zu bauen, sondern neue Dinge in Python/TUI zu lernen.
+Wenn dabei ein kleines nuetzliches Tool herauskommt: super. Wenn nicht: auch okay.
+
+## Arbeitsweise
+
+- AI-assisted Code ist hier explizit Teil des Plans.
+- Ich lasse mir von KI erklaeren, was passiert, und nachvollziehe die Schritte selbst.
+- Der Code wird bewusst geprueft und verstanden.
+- Es ist nicht "vibe coded".
 
 ## Status
 
@@ -27,6 +35,28 @@ Aktueller Stand ist ein fruehes, lauffaehiges MVP mit Fokus auf Lernbarkeit und 
 - Produktidee und Pflichtenheft: doc/project.md
 - Hinweise fuer LLMs/Agenten: AGENTS.md
 
+## uv auf Linux installieren
+
+Empfohlener Weg (offizieller Installer):
+
+```bash
+curl -LsSf https://astral.sh/uv/install.sh | sh
+```
+
+Alternative mit wget:
+
+```bash
+wget -qO- https://astral.sh/uv/install.sh | sh
+```
+
+Danach Verfuegbarkeit pruefen:
+
+```bash
+uv --version
+```
+
+Wenn uv nach der Installation nicht gefunden wird, eine neue Shell oeffnen oder die Shell-Config neu laden.
+
 ## Quickstart mit uv
 
 ```bash
@@ -40,6 +70,57 @@ uv run sshcnfgr tui
 ```bash
 uv tool install .
 sshcnfgr --help
+```
+
+## Nutzung unter Linux (aktueller Stand)
+
+Fuer Anwender, die den aktuellen MVP ausprobieren wollen:
+
+1. uv installieren (siehe oben)
+2. Projekt klonen
+3. Im Projektverzeichnis ausfuehren:
+
+```bash
+uv sync
+uv run sshcnfgr --help
+uv run sshcnfgr tui
+```
+
+Optional mit bestehender SSH-Config starten:
+
+```bash
+uv run sshcnfgr import --source ~/.ssh/config
+uv run sshcnfgr identities scan
+uv run sshcnfgr generate --output ~/.config/sshcnfgr/config.generated
+```
+
+Hinweise:
+
+- Source of Truth ist ~/.config/sshcnfgr/hosts.toml
+- Generierte Datei ist ~/.config/sshcnfgr/config.generated
+- Private Keys werden nicht gespeichert, nur Pfade und Metadaten
+
+## Entwicklung unter Linux
+
+Fuer Developer, die das Projekt erweitern wollen:
+
+```bash
+uv sync --extra dev
+uv run sshcnfgr --help
+```
+
+Nutzliche Befehle:
+
+```bash
+uv run ruff check .
+uv run pytest
+```
+
+Packaging/Release lokal pruefen:
+
+```bash
+uv run -m build
+uv run -m twine check dist/*
 ```
 
 ## License

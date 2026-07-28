@@ -1,0 +1,39 @@
+#body {
+  height: 1fr;
+}
+
+#left {
+  width: 45%;
+  padding: 1;
+  border: round $primary;
+}
+
+#right {
+  width: 55%;
+  padding: 1;
+  border: round $accent;
+}
+
+#list_actions,
+#identity_actions,
+#group_identity_actions,
+#detail_actions {
+  height: auto;
+  margin-top: 1;
+}
+
+#hosts_table,
+#identities_table {
+  height: 1fr;
+}
+
+Input {
+  margin-top: 1;
+}
+
+#status {
+  margin-top: 1;
+  padding: 1;
+  border: round $success;
+  color: $text;
+}

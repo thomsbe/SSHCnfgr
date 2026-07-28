@@ -1,0 +1,66 @@
+[project]
+name = "sshcnfgr"
+version = "0.1.0a1"
+description = "TUI and CLI to manage SSH host configs from a TOML source of truth"
+readme = "README.md"
+requires-python = ">=3.12"
+license = "MIT"
+authors = [{ name = "Thomas Baer", email = "thomas.baer@tbaer.de" }]
+maintainers = [{ name = "Thomas Baer", email = "thomas.baer@tbaer.de" }]
+keywords = ["ssh", "tui", "textual", "cli", "config", "devops"]
+classifiers = [
+  "Development Status :: 3 - Alpha",
+  "Intended Audience :: Developers",
+  "License :: OSI Approved :: MIT License",
+  "Operating System :: POSIX :: Linux",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3.12",
+  "Programming Language :: Python :: 3.13",
+  "Topic :: Software Development :: User Interfaces",
+  "Topic :: System :: Systems Administration",
+]
+dependencies = [
+  "textual>=6.0.0",
+  "click>=8.1.7",
+  "loguru>=0.7.3",
+  "tomli-w>=1.0.0",
+]
+
+[project.urls]
+Homepage = "https://github.com/tbaer/SSHCnfgr"
+Repository = "https://github.com/tbaer/SSHCnfgr"
+Issues = "https://github.com/tbaer/SSHCnfgr/issues"
+
+[project.optional-dependencies]
+dev = [
+  "build>=1.2.2",
+  "pytest>=8.3.0",
+  "ruff>=0.6.0",
+  "twine>=5.1.1",
+]
+
+[project.scripts]
+sshcnfgr = "sshcnfgr.cli:cli"
+
+[build-system]
+requires = ["hatchling>=1.25.0"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build]
+include = [
+  "/src",
+  "/README.md",
+  "/AGENTS.md",
+  "/LICENCE",
+  "/doc/project.md",
+]
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/sshcnfgr"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP"]

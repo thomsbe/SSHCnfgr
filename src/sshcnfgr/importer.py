@@ -43,8 +43,10 @@ def import_ssh_config(path: Path) -> tuple[HostDatabase, ImportReport]:
         raise FileNotFoundError(f"Config nicht gefunden: {path}")
 
     hosts: list[HostEntry] = []
+    global_options: dict[str, str] = {}
     seen_names: set[str] = set()
     current_hosts: list[HostEntry] = []
+    in_host_wildcard = False
 
     for line_number, raw_line in enumerate(path.read_text(encoding="utf-8").splitlines(), start=1):
         line = raw_line.strip()
@@ -61,6 +63,11 @@ def import_ssh_config(path: Path) -> tuple[HostDatabase, ImportReport]:
         if key_lower == "host":
             names = [token for token in value.split() if token]
             current_hosts = []
+            in_host_wildcard = names == ["*"]
+
+            if in_host_wildcard:
+                continue
+
             for name in names:
                 if any(ch in name for ch in "*?!"):
                     report.warnings.append(
@@ -80,6 +87,10 @@ def import_ssh_config(path: Path) -> tuple[HostDatabase, ImportReport]:
                     report.warnings.append(
                         f"Zeile {line_number}: Host '{name}' umbenannt zu '{unique_name}'"
                     )
+            continue
+
+        if in_host_wildcard:
+            global_options[key] = value
             continue
 
         if not current_hosts:
@@ -107,4 +118,5 @@ def import_ssh_config(path: Path) -> tuple[HostDatabase, ImportReport]:
                 host.extra_options[key] = value
 
     logger.info("Import abgeschlossen: {}", report.summary())
-    return HostDatabase(hosts=hosts), report
+    db = HostDatabase(hosts=hosts, global_options=global_options)
+    return db, report

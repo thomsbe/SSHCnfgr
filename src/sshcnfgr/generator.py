@@ -32,7 +32,14 @@ def generate_config(db: HostDatabase) -> str:
         "",
     ]
 
-    blocks = [render_host_block(host, db) for host in db.sorted_hosts() if host.enabled]
+    blocks: list[str] = []
+    if db.global_options:
+        global_lines = ["Host *"]
+        for key, value in sorted(db.global_options.items(), key=lambda item: item[0].lower()):
+            global_lines.append(f"  {key} {value}")
+        blocks.append("\n".join(global_lines))
+
+    blocks.extend(render_host_block(host, db) for host in db.sorted_hosts() if host.enabled)
     return "\n".join(header + blocks).strip() + "\n"
 
 

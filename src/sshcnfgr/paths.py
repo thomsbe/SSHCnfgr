@@ -6,6 +6,7 @@ APP_DIR = Path.home() / ".config" / "sshcnfgr"
 DB_PATH = APP_DIR / "hosts.toml"
 GENERATED_CONFIG_PATH = APP_DIR / "config.generated"
 LOG_PATH = APP_DIR / "sshcnfgr.log"
+APP_SETTINGS_PATH = APP_DIR / "app.toml"
 
 
 def ensure_app_dir() -> Path:

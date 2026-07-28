@@ -81,6 +81,7 @@ class HostEntry:
 class HostDatabase:
     groups: list[HostGroup] = field(default_factory=list)
     identities: list[IdentityProfile] = field(default_factory=list)
+    global_options: dict[str, str] = field(default_factory=dict)
     hosts: list[HostEntry] = field(default_factory=list)
 
     def validate(self) -> list[str]:
@@ -176,7 +177,27 @@ class HostDatabase:
             if identity and identity.enabled:
                 return identity.identity_file
 
+        global_identity_file = self.global_options.get("IdentityFile")
+        if global_identity_file:
+            return global_identity_file
+
         return None
+
+    def resolve_identity_agent(self, host: HostEntry) -> str | None:
+        if "IdentityAgent" in host.extra_options:
+            return host.extra_options["IdentityAgent"]
+        return self.global_options.get("IdentityAgent")
+
+    def resolve_port(self, host: HostEntry) -> int:
+        if host.port is not None:
+            return host.port
+        global_port = self.global_options.get("Port")
+        if global_port:
+            try:
+                return int(global_port)
+            except ValueError:
+                pass
+        return 22
 
     def ensure_groups(self, group_names: list[str]) -> None:
         existing = {group.name for group in self.groups}

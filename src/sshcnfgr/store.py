@@ -102,7 +102,12 @@ def load_database(path: Path = DB_PATH) -> HostDatabase:
     raw = tomllib.loads(path.read_text(encoding="utf-8"))
     group_items = raw.get("groups", [])
     identity_items = raw.get("identities", [])
+    global_options_raw = raw.get("global_options", {})
     host_items = raw.get("hosts", [])
+
+    global_options: dict[str, str] = {}
+    if isinstance(global_options_raw, dict):
+        global_options = {str(k): str(v) for k, v in global_options_raw.items()}
 
     groups: list[HostGroup] = []
     for item in group_items:
@@ -125,7 +130,12 @@ def load_database(path: Path = DB_PATH) -> HostDatabase:
 
     # Rueckwaertskompatibilitaet: existierende hosts.toml ohne [groups]
     # wird automatisch mit referenzierten Gruppen aufgefuellt.
-    db = HostDatabase(groups=groups, identities=identities, hosts=hosts)
+    db = HostDatabase(
+        groups=groups,
+        identities=identities,
+        global_options=global_options,
+        hosts=hosts,
+    )
     referenced_groups = sorted({group for host in hosts for group in host.groups})
     db.ensure_groups(referenced_groups)
 
@@ -137,6 +147,7 @@ def save_database(db: HostDatabase, path: Path = DB_PATH) -> None:
     payload = {
         "groups": [_group_to_dict(group) for group in db.sorted_groups()],
         "identities": [_identity_to_dict(identity) for identity in db.sorted_identities()],
+        "global_options": db.global_options,
         "hosts": [_host_to_dict(host) for host in db.hosts],
     }
 

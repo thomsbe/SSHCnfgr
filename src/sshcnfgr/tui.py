@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from rich.text import Text
 from textual.app import App, ComposeResult
 from textual.containers import Horizontal, Vertical
 from textual.widgets import Button, Checkbox, DataTable, Footer, Header, Input, Label, Static
@@ -7,6 +8,7 @@ from textual.widgets import Button, Checkbox, DataTable, Footer, Header, Input, 
 from .generator import write_generated_config
 from .identities import discover_ssh_identities, merge_discovered_identities
 from .model import HostDatabase, HostEntry
+from .settings import load_ui_theme, save_ui_theme
 from .store import load_database, save_database
 
 
@@ -23,11 +25,12 @@ class SSHCnfgrApp(App[None]):
 
     # Keybindings werden automatisch im Footer angezeigt und auf action_* gemappt.
     BINDINGS = [
-        ("ctrl+s", "save", "Save"),
-        ("ctrl+g", "generate", "Generate"),
-        ("ctrl+n", "new_host", "New"),
-        ("ctrl+d", "delete_host", "Delete"),
-        ("q", "quit", "Quit"),
+        ("ctrl+s", "save", "Speichern"),
+        ("ctrl+g", "generate", "Generieren"),
+        ("ctrl+n", "new_host", "Neu"),
+        ("ctrl+d", "delete_host", "Loeschen"),
+        ("ctrl+t", "toggle_theme", "Thema"),
+        ("q", "quit", "Beenden"),
     ]
 
     def __init__(self) -> None:
@@ -85,6 +88,9 @@ class SSHCnfgrApp(App[None]):
 
         Hier laden wir Daten aus der TOML-Datei und initialisieren die Tabelle.
         """
+        # Dark/Light wird aus app.toml gelesen und auf die App angewandt.
+        self.dark = load_ui_theme()
+
         self.db = load_database()
         hosts_table = self.query_one("#hosts_table", DataTable)
         hosts_table.add_columns("Host", "HostName", "User", "Port", "Identity", "Aktiv")
@@ -92,7 +98,7 @@ class SSHCnfgrApp(App[None]):
         identities_table.add_columns("Name", "IdentityFile", "Public", "Source", "Enabled")
         self._refresh_table()
         self._refresh_identities_table()
-        self._set_status("Bereit")
+        self._set_status(f"Bereit | Theme: {'Dunkel' if self.dark else 'Hell'}")
 
     def _set_status(self, message: str) -> None:
         """Schreibt eine kurze Rueckmeldung in die Statuszeile."""
@@ -108,15 +114,45 @@ class SSHCnfgrApp(App[None]):
         table.clear(columns=False)
 
         for host in self.db.sorted_hosts():
+            identity_cell = self._identity_table_cell(host)
+            port_cell = self._port_table_cell(host)
             table.add_row(
                 host.name,
                 host.host_name,
                 host.user or "",
-                str(host.port or ""),
-                host.identity or "",
+                port_cell,
+                identity_cell,
                 "yes" if host.enabled else "no",
                 key=host.id,
             )
+
+    def _identity_table_cell(self, host: HostEntry) -> Text:
+        """Gibt den Identity-Wert fuer die Tabelle zurueck.
+
+        Ist der Wert indirekt (z. B. via Host *), wird er gedimmt angezeigt.
+        """
+        if host.identity_file:
+            return Text(host.identity_file)
+        if host.identity:
+            return Text(host.identity)
+
+        resolved = self.db.resolve_identity_file(host)
+        if resolved:
+            return Text(resolved, style="dim")
+
+        identity_agent = self.db.resolve_identity_agent(host)
+        if identity_agent:
+            return Text(f"agent:{identity_agent}", style="dim")
+        return Text("")
+
+    def _port_table_cell(self, host: HostEntry) -> Text:
+        """Zeigt Port explizit oder effektiv (Default 22) an.
+
+        Effektive, aber nicht explizit gesetzte Werte werden gedimmt angezeigt.
+        """
+        if host.port is not None:
+            return Text(str(host.port))
+        return Text(str(self.db.resolve_port(host)), style="dim")
 
     def _refresh_identities_table(self) -> None:
         table = self.query_one("#identities_table", DataTable)
@@ -284,6 +320,12 @@ class SSHCnfgrApp(App[None]):
         """Erzeugt aus der aktuellen DB die OpenSSH-Ausgabedatei."""
         target = write_generated_config(self.db)
         self._set_status(f"Generiert: {target}")
+
+    def action_toggle_theme(self) -> None:
+        """Schaltet zwischen Hell/Dunkel und speichert die Auswahl dauerhaft."""
+        self.dark = not self.dark
+        save_ui_theme(self.dark)
+        self._set_status(f"Theme gespeichert: {'Dunkel' if self.dark else 'Hell'}")
 
     def action_scan_identities(self) -> None:
         """Liest Keys aus ~/.ssh ein und merged sie in die Datenbank."""

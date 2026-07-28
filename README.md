@@ -175,6 +175,8 @@ uv run sshcnfgr tui
 - Die Identity-Liste zeigt verwaltete Schluesselprofile.
 - "Scan ~/.ssh" liest lokale Key-Dateien mit .pub-Pendant ein.
 - "Use Selected" uebernimmt die gewaehlte Identity ins Host-Formular.
+- Theme umschalten: Ctrl+T
+- Gewaehltes Theme wird dauerhaft gespeichert in ~/.config/sshcnfgr/app.toml
 - Mit einem Klick auf einen Host werden Felder rechts befuellt.
 - Speichern schreibt nur die TOML-Datenbank.
 - Generate erstellt die SSH-Ausgabedatei aus allen aktiven Hosts.

@@ -10,6 +10,7 @@ Ziel ist, SSH-Hosts, Gruppen und Identities ueber eine Textual-TUI und Click-CLI
 ## Wichtige Doku
 
 - Produktidee und Pflichtenheft: doc/project.md
+- Bearbeitungsstand und Uebergabe: doc/plan.md
 - Einstieg und Nutzung: README.md
 
 ## Technischer Stack

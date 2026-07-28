@@ -47,6 +47,8 @@ def import_ssh_config(path: Path) -> tuple[HostDatabase, ImportReport]:
     seen_names: set[str] = set()
     current_hosts: list[HostEntry] = []
     in_host_wildcard = False
+    in_skipped_host = False
+    seen_host_block = False
 
     for line_number, raw_line in enumerate(path.read_text(encoding="utf-8").splitlines(), start=1):
         line = raw_line.strip()
@@ -64,6 +66,8 @@ def import_ssh_config(path: Path) -> tuple[HostDatabase, ImportReport]:
             names = [token for token in value.split() if token]
             current_hosts = []
             in_host_wildcard = names == ["*"]
+            in_skipped_host = False
+            seen_host_block = True
 
             if in_host_wildcard:
                 continue
@@ -87,16 +91,26 @@ def import_ssh_config(path: Path) -> tuple[HostDatabase, ImportReport]:
                     report.warnings.append(
                         f"Zeile {line_number}: Host '{name}' umbenannt zu '{unique_name}'"
                     )
+
+            # Komplett uebersprungene Bloecke (z. B. nur Wildcards) duerfen ihre
+            # Direktiven nicht an nachfolgende Hosts oder global_options verlieren.
+            in_skipped_host = not current_hosts
             continue
 
         if in_host_wildcard:
             global_options[key] = value
             continue
 
-        if not current_hosts:
+        if in_skipped_host:
             report.warnings.append(
-                f"Zeile {line_number}: Direktive ausserhalb eines Host-Blocks ignoriert ({key})"
+                f"Zeile {line_number}: Direktive fuer uebersprungenen Host-Block ignoriert ({key})"
             )
+            continue
+
+        if not seen_host_block:
+            # Direktiven vor dem ersten Host-Block (inkl. Include) gelten in
+            # OpenSSH als globale Defaults und gehoeren nicht an einen Host.
+            global_options[key] = value
             continue
 
         for host in current_hosts:

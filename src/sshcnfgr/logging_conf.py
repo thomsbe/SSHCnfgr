@@ -12,10 +12,14 @@ def configure_logging(verbose: bool = False) -> None:
     logger.remove()
 
     console_level = "DEBUG" if verbose else "INFO"
+    console_format = (
+        "<green>{time:YYYY-MM-DD HH:mm:ss}</green> | <level>{level: <8}</level> | "
+        "<cyan>{name}</cyan>:<cyan>{function}</cyan> - <level>{message}</level>"
+    )
     logger.add(
         sys.stderr,
         level=console_level,
-        format="<green>{time:YYYY-MM-DD HH:mm:ss}</green> | <level>{level: <8}</level> | <cyan>{name}</cyan>:<cyan>{function}</cyan> - <level>{message}</level>",
+        format=console_format,
         backtrace=False,
         diagnose=False,
     )

@@ -4,7 +4,7 @@ from datetime import datetime
 from pathlib import Path
 
 from .model import HostDatabase, HostEntry
-from .paths import GENERATED_CONFIG_PATH, ensure_app_dir
+from .paths import GENERATED_CONFIG_PATH
 
 
 def render_host_block(host: HostEntry, db: HostDatabase) -> str:
@@ -16,7 +16,9 @@ def render_host_block(host: HostEntry, db: HostDatabase) -> str:
     if host.port is not None:
         lines.append(f"  Port {host.port}")
     resolved_identity_file = db.resolve_identity_file(host)
-    if resolved_identity_file:
+    # Der globale IdentityFile-Default wird schon im Host-*-Block ausgegeben
+    # und muss nicht in jeden Host-Block wiederholt werden.
+    if resolved_identity_file and resolved_identity_file != db.global_options.get("IdentityFile"):
         lines.append(f"  IdentityFile {resolved_identity_file}")
 
     for key, value in sorted(host.extra_options.items(), key=lambda item: item[0].lower()):
@@ -32,19 +34,21 @@ def generate_config(db: HostDatabase) -> str:
         "",
     ]
 
-    blocks: list[str] = []
+    blocks: list[str] = [render_host_block(host, db) for host in db.sorted_hosts() if host.enabled]
+
+    # OpenSSH verwendet pro Parameter den ersten gefundenen Wert, daher gehoeren
+    # globale Defaults (Host *) ans Dateiende, sonst schlagen sie Host-Werte.
     if db.global_options:
         global_lines = ["Host *"]
         for key, value in sorted(db.global_options.items(), key=lambda item: item[0].lower()):
             global_lines.append(f"  {key} {value}")
         blocks.append("\n".join(global_lines))
 
-    blocks.extend(render_host_block(host, db) for host in db.sorted_hosts() if host.enabled)
     return "\n".join(header + blocks).strip() + "\n"
 
 
 def write_generated_config(db: HostDatabase, output: Path = GENERATED_CONFIG_PATH) -> Path:
-    ensure_app_dir()
+    output.parent.mkdir(parents=True, exist_ok=True)
     content = generate_config(db)
 
     tmp_path = output.with_suffix(output.suffix + ".tmp")

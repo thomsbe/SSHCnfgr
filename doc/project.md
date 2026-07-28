@@ -104,12 +104,28 @@ Sollfunktionen:
 	- Suffix-Vergabe (-1, -2, ...)
 	- Protokolleintrag im Import-Report
 
+Ergänzende Festlegungen (Stand 2026-07-28):
+
+- Direktiven vor dem ersten Host-Block gelten als globale Defaults und werden in
+  global_options uebernommen (OpenSSH-konform)
+- Include vor dem ersten Host-Block wird global uebernommen; Include innerhalb eines
+  Host-Blocks bleibt als extra_option konditional am jeweiligen Host
+- Wildcard-Hosts ausser Host * werden uebersprungen; ihre Direktiven werden
+  protokolliert und weder global noch anderen Hosts zugeordnet
+
 #### 5.3 Generierung der SSH-Config
 
 - Nur enabled=true Hosts werden ausgegeben
 - Deterministische Reihenfolge (alphabetisch nach name)
 - Ausgabe enthaelt je Host einen Host-Block mit den gesetzten Optionen
 - Leere/ungueltige Felder werden nicht geschrieben
+
+Ergänzende Festlegungen (Stand 2026-07-28):
+
+- Der Host-*-Block mit globalen Defaults steht am Dateiende, da OpenSSH pro
+  Parameter den ersten gefundenen Wert verwendet
+- Ein globaler IdentityFile-Default wird nicht redundant in einzelne
+  Host-Bloecke geschrieben
 
 ### 6. CLI-Anforderungen
 

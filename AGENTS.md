@@ -50,6 +50,7 @@ Ziel ist, SSH-Hosts, Gruppen und Identities ueber eine Textual-TUI und Click-CLI
 
 ## Agenten-Richtlinien fuer Codeaenderungen
 
+- Benutze das Tool Context7, es liefert aktuellste Doku für die verwendeten Frameworks, Pflicht die Doku zu checken
 - Kleine, zielgerichtete Aenderungen statt grosser Refactors
 - Vorhandene CLI-Kommandos und Dateistruktur nicht ohne Grund brechen
 - Bei Datenmodell-Aenderungen immer Load/Save in store.py mitpflegen

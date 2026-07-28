@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import copy
+
 from rich.text import Text
 from textual.app import App, ComposeResult
 from textual.containers import Horizontal, Vertical
@@ -186,27 +188,27 @@ class SSHCnfgrApp(App[None]):
         self.query_one("#enabled", Checkbox).value = host.enabled
 
     def _read_form(self) -> tuple[HostEntry, list[str]]:
-        """Liest UI-Felder ein und schreibt sie in ein Host-Objekt.
+        """Liest UI-Felder ein und baut daraus einen Host-Kandidaten.
 
-        Wenn ein Host selektiert ist, wird dieses Objekt direkt aktualisiert.
-        Sonst wird ein neues HostEntry erstellt.
+        Bei selektiertem Host wird eine Kopie als Basis genommen, damit nicht im
+        Formular abgebildete Felder (tags, extra_options) erhalten bleiben. Das
+        Modellobjekt in self.db wird hier bewusst nicht veraendert; das Commit
+        passiert erst nach erfolgreicher Validierung in action_save.
         """
         selected = self._get_selected_host()
-        host = selected if selected is not None else HostEntry()
+        host = copy.deepcopy(selected) if selected is not None else HostEntry()
 
         host.name = self.query_one("#name", Input).value.strip()
         host.host_name = self.query_one("#host_name", Input).value.strip()
         host.user = self.query_one("#user", Input).value.strip() or None
 
+        errors: list[str] = []
         port_raw = self.query_one("#port", Input).value.strip()
         if port_raw:
             try:
                 host.port = int(port_raw)
             except ValueError:
-                # Ungueltige Eingabe fuehrt zu None; validate() meldet den Fehler.
-                host.port = None
-        else:
-            host.port = None
+                errors.append(f"port ist keine Zahl: {port_raw}")
 
         host.identity = self.query_one("#identity", Input).value.strip() or None
         host.identity_file = self.query_one("#identity_file", Input).value.strip() or None
@@ -214,7 +216,8 @@ class SSHCnfgrApp(App[None]):
         host.groups = [item.strip() for item in groups_raw.split(",") if item.strip()]
         host.enabled = self.query_one("#enabled", Checkbox).value
 
-        return host, host.validate()
+        errors.extend(host.validate())
+        return host, errors
 
     def on_data_table_row_selected(self, event: DataTable.RowSelected) -> None:
         """Event-Handler: Klick/Enter auf eine Tabellenzeile.
@@ -294,27 +297,37 @@ class SSHCnfgrApp(App[None]):
         self._set_status(f"Host geloescht: {host.name}")
 
     def action_save(self) -> None:
-        """Validiert Formular/DB und speichert den Zustand nach TOML."""
-        host, errors = self._read_form()
+        """Validiert Formular/DB auf einer Kopie und speichert erst bei Erfolg.
+
+        So bleibt die In-Memory-DB bei Validierungsfehlern unveraendert und
+        die App haengt nicht in einem kaputten Zwischenzustand fest.
+        """
+        candidate, errors = self._read_form()
         if errors:
             self._set_status("; ".join(errors))
             return
 
-        if self.selected_host_id is None:
-            self.db.hosts.append(host)
-            self.selected_host_id = host.id
+        candidate_db = copy.deepcopy(self.db)
+        existing = candidate_db.get_by_id(candidate.id)
+        if existing is None:
+            candidate_db.hosts.append(candidate)
+        else:
+            candidate_db.hosts[candidate_db.hosts.index(existing)] = candidate
+        candidate_db.ensure_groups(candidate.groups)
 
-        self.db.ensure_groups(host.groups)
-
-        db_errors = self.db.validate()
+        db_errors = candidate_db.validate()
         if db_errors:
             self._set_status("; ".join(db_errors))
             return
 
+        self.db = candidate_db
+        if self.selected_host_id is None:
+            self.selected_host_id = candidate.id
+
         save_database(self.db)
         self._refresh_table()
         self._refresh_identities_table()
-        self._set_status(f"Gespeichert: {host.name}")
+        self._set_status(f"Gespeichert: {candidate.name}")
 
     def action_generate(self) -> None:
         """Erzeugt aus der aktuellen DB die OpenSSH-Ausgabedatei."""

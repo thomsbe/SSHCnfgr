@@ -11,7 +11,6 @@ from .importer import import_ssh_config
 from .logging_conf import configure_logging
 from .paths import DB_PATH, GENERATED_CONFIG_PATH
 from .store import load_database, save_database
-from .tui import run_tui
 
 
 @click.group(help="SSHCnfgr: SSH-Hosts per TOML mit TUI und CLI verwalten")
@@ -22,6 +21,9 @@ def cli(verbose: bool) -> None:
 
 @cli.command("tui", help="Starte die Textual TUI")
 def tui_command() -> None:
+    # Lazy import, damit reine CLI-Kommandos nicht die Textual-Importzeit zahlen.
+    from .tui import run_tui
+
     logger.info("TUI wird gestartet")
     run_tui()
 
@@ -87,7 +89,12 @@ def identities_scan_command(ssh_dir: Path) -> None:
     discovered = discover_ssh_identities(ssh_dir)
     created, updated = merge_discovered_identities(db, discovered)
     save_database(db, DB_PATH)
-    logger.info("Identities gescannt: discovered={}, created={}, updated={}", len(discovered), created, updated)
+    logger.info(
+        "Identities gescannt: discovered={}, created={}, updated={}",
+        len(discovered),
+        created,
+        updated,
+    )
     click.echo(f"Scan ok: discovered={len(discovered)} created={created} updated={updated}")
 
 
@@ -100,7 +107,8 @@ def identities_list_command() -> None:
 
     for identity in db.sorted_identities():
         click.echo(
-            f"{identity.name:20} {identity.identity_file} source={identity.source} enabled={identity.enabled}"
+            f"{identity.name:20} {identity.identity_file} "
+            f"source={identity.source} enabled={identity.enabled}"
         )
 
 

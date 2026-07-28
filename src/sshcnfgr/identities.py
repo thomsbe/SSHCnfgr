@@ -64,7 +64,9 @@ def discover_ssh_identities(ssh_dir: Path | None = None) -> list[IdentityProfile
     return identities
 
 
-def merge_discovered_identities(db: HostDatabase, discovered: list[IdentityProfile]) -> tuple[int, int]:
+def merge_discovered_identities(
+    db: HostDatabase, discovered: list[IdentityProfile]
+) -> tuple[int, int]:
     existing_by_name = {identity.name: identity for identity in db.identities}
     existing_paths = {identity.identity_file for identity in db.identities}
 

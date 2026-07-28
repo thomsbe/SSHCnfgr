@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from pathlib import Path
 from uuid import uuid4
 
 
@@ -209,7 +208,3 @@ class HostDatabase:
     def ensure_identity(self, profile: IdentityProfile) -> None:
         if self.get_identity_by_name(profile.name) is None:
             self.identities.append(profile)
-
-
-def default_identity_file() -> str:
-    return str(Path.home() / ".ssh" / "id_ed25519")

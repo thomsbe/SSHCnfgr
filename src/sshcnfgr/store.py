@@ -6,7 +6,7 @@ from pathlib import Path
 import tomli_w
 
 from .model import HostDatabase, HostEntry, HostGroup, IdentityProfile
-from .paths import DB_PATH, ensure_app_dir
+from .paths import DB_PATH
 
 
 def _host_to_dict(host: HostEntry) -> dict[str, object]:
@@ -87,7 +87,9 @@ def _identity_from_dict(data: dict[str, object]) -> IdentityProfile:
         name=str(data.get("name", "")),
         identity_file=str(data.get("identity_file", "")),
         source=str(data.get("source", "manual")),
-        public_key_file=str(data.get("public_key_file", "")) if data.get("public_key_file") else None,
+        public_key_file=str(data.get("public_key_file", ""))
+        if data.get("public_key_file")
+        else None,
         public_key_preview=str(data.get("public_key_preview", ""))
         if data.get("public_key_preview")
         else None,
@@ -143,7 +145,7 @@ def load_database(path: Path = DB_PATH) -> HostDatabase:
 
 
 def save_database(db: HostDatabase, path: Path = DB_PATH) -> None:
-    ensure_app_dir()
+    path.parent.mkdir(parents=True, exist_ok=True)
     payload = {
         "groups": [_group_to_dict(group) for group in db.sorted_groups()],
         "identities": [_identity_to_dict(identity) for identity in db.sorted_identities()],

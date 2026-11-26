@@ -5,6 +5,13 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html) (with PEP 440 pre-release tags).
 
+## [0.2.0b2] - 2026-11-26
+
+### Added
+- **User-defined group ordering with Drag & Drop (Qt6 GUI):** Reorder groups via drag & drop or `▲` / `▼` buttons in the Groups tab; order is preserved in `~/.ssh/sshcnfgr.toml` instead of forced alphabetical sorting.
+- **Grouped OpenSSH config generation (VS Code Remote-SSH friendly):** Active hosts are grouped by their primary (first) group in your custom group order (with clear section comments) so important hosts appear at the top in VS Code and `config.generated`.
+- **Extended group defaults & `Match originalhost` blocks:** Groups now support default `user`, `port`, `identity`, and `extra_options` (e.g. `IdentitiesOnly yes`, `ProxyJump`), emitted as clean OpenSSH `Match originalhost alias1,alias2,...` blocks after host blocks and before `Host *`.
+
 ## [0.2.0b1] - 2026-11-26
 
 ### Added

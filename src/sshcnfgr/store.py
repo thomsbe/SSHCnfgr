@@ -64,6 +64,12 @@ def _group_to_dict(group: HostGroup) -> dict[str, object]:
         payload["description"] = group.description
     if group.identity:
         payload["identity"] = group.identity
+    if group.user is not None:
+        payload["user"] = group.user
+    if group.port is not None:
+        payload["port"] = group.port
+    if group.extra_options:
+        payload["extra_options"] = group.extra_options
     return payload
 
 
@@ -100,10 +106,17 @@ def _host_from_dict(data: dict[str, object]) -> HostEntry:
 
 
 def _group_from_dict(data: dict[str, object]) -> HostGroup:
+    extra_raw = data.get("extra_options")
+    extra_options: dict[str, str] = {}
+    if isinstance(extra_raw, dict):
+        extra_options = {str(k): str(v) for k, v in extra_raw.items()}
     return HostGroup(
         name=str(data.get("name", "")),
         description=str(data.get("description", "")) if data.get("description") else "",
         identity=str(data.get("identity", "")) if data.get("identity") else None,
+        user=str(data["user"]) if data.get("user") is not None else None,
+        port=int(data["port"]) if data.get("port") is not None else None,
+        extra_options=extra_options,
     )
 
 
@@ -208,7 +221,8 @@ def save_database(db: HostDatabase, path: Path = DB_PATH, *, backup: bool = True
         create_backup(path)
 
     payload: dict[str, object] = {
-        "groups": [_group_to_dict(group) for group in db.sorted_groups()],
+        # Gruppen-Reihenfolge explizit beibehalten (bestimmt Sortierung in config.generated/VS Code)
+        "groups": [_group_to_dict(group) for group in db.ordered_groups()],
         "identities": [_identity_to_dict(identity) for identity in db.sorted_identities()],
         "global_options": db.global_options,
         "hosts": [_host_to_dict(host) for host in db.sorted_hosts()],

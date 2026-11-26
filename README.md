@@ -4,7 +4,7 @@
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](https://github.com/thomsbe/SSHCnfgr/blob/main/LICENSE)
 [![Python 3.12+](https://img.shields.io/badge/Python-3.12%2B-3776AB.svg)](https://www.python.org/)
-[![Status: Beta](https://img.shields.io/badge/Status-0.2.0b1%20Beta-orange.svg)](https://pypi.org/project/sshcnfgr/)
+[![Status: Beta](https://img.shields.io/badge/Status-0.2.0b2%20Beta-orange.svg)](https://pypi.org/project/sshcnfgr/)
 
 **SSHCnfgr** verwaltet deine OpenSSH-Hosts, Gruppen und Identities über eine einzige, saubere TOML-Datei (`~/.ssh/sshcnfgr.toml`) — per **Textual-TUI**, optionaler **Qt6-Desktop-GUI** (Wayland/X11/macOS/Windows) oder **Click-CLI**.
 
@@ -13,6 +13,7 @@
 - **Eine einzige Datei neben `~/.ssh/config`:** Alles liegt in `~/.ssh/sshcnfgr.toml` (auf Linux/macOS automatisch mit `0600`-Rechten, unter Windows in `%USERPROFILE%\.ssh\sshcnfgr.toml`) — ideal für den direkten Start per `uvx`.
 - **TOML als Source of Truth:** Deaktivierte Hosts bleiben in der Datenbank erhalten, landen aber nicht in der generierten OpenSSH-Config (`~/.ssh/config.generated`, ebenfalls `0600`).
 - **Dubletten finden & zusammenführen:** Erkennt Hosts mit gleichem Ziel (`HostName` + effektiver `Port` + effektiver `User`), zeigt Feld-Konflikte übersichtlich an und führt Einträge interaktiv zusammen (übrige Dubletten wahlweise deaktivieren oder löschen).
+- **Gruppen-Reihenfolge (Drag & Drop) & `Match originalhost`-Regeln:** Sortiere Gruppen in der Qt6-GUI frei per Drag & Drop — `config.generated` (und damit auch **VS Code Remote-SSH**) listet Hosts nach ihrer ersten Gruppe in genau dieser Reihenfolge. Gruppen-Defaults (`Identity`, `User`, `Port`, `ProxyJump`, `IdentitiesOnly`, …) werden als saubere OpenSSH-`Match originalhost`-Blöcke erzeugt.
 - **TUI, Qt6-GUI & CLI:** Im Terminal mit Textual, auf dem Desktop optional mit PySide6/Qt6 (Live-Suche, Gruppen-/Identity-Tabs, `extra_options`-Editor, Config-Vorschau) oder skriptbar über die CLI.
 - **Sicherheitsnetz:** Keine Speicherung privater Schlüssel-Inhalte (nur Pfade & `.pub`-Metadaten), atomares Schreiben und automatische Zeitstempel-Backups (`*.bak.YYYYMMDD-HHMMSS`) vor jedem Überschreiben.
 
@@ -20,7 +21,7 @@
 
 ## Schnellstart mit `uv` / `uvx`
 
-> **Hinweis zur Beta-Version (`0.2.0b1`):** Da es sich um eine Vorabversion handelt, benötigt `uvx` / `uv tool install` aktuell das Flag `--prerelease=allow`. Ab dem regulären `0.2.0`-Release entfällt dieses Flag.
+> **Hinweis zur Beta-Version (`0.2.0b2`):** Da es sich um eine Vorabversion handelt, benötigt `uvx` / `uv tool install` aktuell das Flag `--prerelease=allow`. Ab dem regulären `0.2.0`-Release entfällt dieses Flag.
 
 ### Ohne Installation direkt ausführen (`uvx`)
 
@@ -170,7 +171,7 @@ Weitere Dokumente: [CHANGELOG.md](CHANGELOG.md), [SECURITY.md](SECURITY.md), [CO
 
 ### Quickstart
 ```bash
-# Run directly with uvx (during 0.2.0b1 beta, pass --prerelease=allow)
+# Run directly with uvx (during 0.2.0b2 beta, pass --prerelease=allow)
 uvx --prerelease=allow sshcnfgr
 uvx --prerelease=allow --from "sshcnfgr[qt]" sshcnfgr gui
 

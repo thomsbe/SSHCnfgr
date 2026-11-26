@@ -8,7 +8,7 @@ import unittest
 from pathlib import Path
 
 from sshcnfgr.identities import merge_discovered_identities
-from sshcnfgr.model import HostDatabase, HostEntry, IdentityProfile
+from sshcnfgr.model import HostDatabase, HostEntry, HostGroup, IdentityProfile
 
 HAS_LOGURU = importlib.util.find_spec("loguru") is not None
 HAS_TOMLI_W = importlib.util.find_spec("tomli_w") is not None
@@ -30,6 +30,42 @@ class ModelAndIdentitiesTests(unittest.TestCase):
         self.assertEqual(db.resolve_identity_agent(host), "/tmp/agent.sock")
         self.assertEqual(db.resolve_port(host), 2200)
         self.assertEqual(db.resolve_user(host), "deploy")
+
+    def test_group_defaults_inherited_by_resolvers(self) -> None:
+        db = HostDatabase(
+            groups=[
+                HostGroup(
+                    name="prod",
+                    identity="id_prod",
+                    user="ops",
+                    port=2222,
+                    extra_options={"IdentityAgent": "/run/prod.sock"},
+                )
+            ],
+            identities=[IdentityProfile(name="id_prod", identity_file="~/.ssh/id_prod")],
+            global_options={"User": "fallback", "Port": "2200"},
+            hosts=[
+                HostEntry(id="h1", name="api", host_name="10.0.1.10", groups=["prod"]),
+                HostEntry(
+                    id="h2",
+                    name="web",
+                    host_name="10.0.1.11",
+                    user="deploy",
+                    port=22,
+                    groups=["prod"],
+                ),
+            ],
+        )
+
+        api, web = db.hosts[0], db.hosts[1]
+        self.assertEqual(db.resolve_user(api), "ops")
+        self.assertEqual(db.resolve_port(api), 2222)
+        self.assertEqual(db.resolve_identity_file(api), "~/.ssh/id_prod")
+        self.assertEqual(db.resolve_identity_agent(api), "/run/prod.sock")
+
+        # Explizite Host-Werte schlagen Gruppen-Defaults.
+        self.assertEqual(db.resolve_user(web), "deploy")
+        self.assertEqual(db.resolve_port(web), 22)
 
     def test_merge_discovered_identities_preserves_disabled_flag(self) -> None:
         db = HostDatabase(
@@ -203,6 +239,79 @@ class GeneratorAndStoreTests(unittest.TestCase):
             ):
                 loaded = load_database()
                 self.assertEqual([h.name for h in loaded.hosts], ["legacy-host"])
+
+    def test_group_order_preserved_and_match_originalhost_generated(self) -> None:
+        from sshcnfgr.generator import generate_config
+        from sshcnfgr.store import load_database, save_database
+
+        db = HostDatabase(
+            groups=[
+                HostGroup(
+                    name="zeta-prod",
+                    description="Wichtig",
+                    identity="id_prod",
+                    user="ubuntu",
+                    port=2222,
+                    extra_options={"IdentitiesOnly": "yes", "ProxyJump": "bastion"},
+                ),
+                HostGroup(
+                    name="alpha-lab",
+                    identity="id_lab",
+                    user="root",
+                ),
+            ],
+            identities=[
+                IdentityProfile(name="id_prod", identity_file="~/.ssh/id_prod"),
+                IdentityProfile(name="id_lab", identity_file="~/.ssh/id_lab"),
+            ],
+            global_options={"ServerAliveInterval": "30"},
+            hosts=[
+                HostEntry(id="h1", name="a-lab", host_name="192.168.1.5", groups=["alpha-lab"]),
+                HostEntry(
+                    id="h2",
+                    name="z-api",
+                    host_name="10.0.0.10",
+                    groups=["zeta-prod", "alpha-lab"],
+                ),
+                HostEntry(id="h3", name="m-solo", host_name="10.9.9.9"),
+            ],
+        )
+
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            db_path = Path(tmp_dir) / "sshcnfgr.toml"
+            save_database(db, db_path, backup=False)
+            reloaded = load_database(db_path)
+
+        # Gruppen-Reihenfolge (nicht alphabetisch) und Defaults bleiben erhalten.
+        self.assertEqual([g.name for g in reloaded.groups], ["zeta-prod", "alpha-lab"])
+        self.assertEqual(reloaded.groups[0].user, "ubuntu")
+        self.assertEqual(reloaded.groups[0].port, 2222)
+        self.assertEqual(reloaded.groups[0].extra_options.get("ProxyJump"), "bastion")
+
+        rendered = generate_config(reloaded, include_timestamp=False)
+        pos_prod = rendered.index("Host z-api")
+        pos_lab = rendered.index("Host a-lab")
+        pos_solo = rendered.index("Host m-solo")
+        pos_match_prod = rendered.index("Match originalhost z-api")
+        pos_match_lab = rendered.index("Match originalhost a-lab,z-api")
+        pos_wildcard = rendered.index("Host *")
+
+        # Reihenfolge fuer VS Code: zeta-prod -> alpha-lab -> Ohne Gruppe -> Match -> Host *
+        self.assertLess(pos_prod, pos_lab)
+        self.assertLess(pos_lab, pos_solo)
+        self.assertLess(pos_solo, pos_match_prod)
+        self.assertLess(pos_match_prod, pos_match_lab)
+        self.assertLess(pos_match_lab, pos_wildcard)
+
+        # Gruppen-IdentityFile landet im Match-Block, nicht doppelt im Host-Block.
+        host_section = rendered[pos_prod:pos_lab]
+        self.assertNotIn("IdentityFile", host_section)
+        match_prod_section = rendered[pos_match_prod:pos_match_lab]
+        self.assertIn("User ubuntu", match_prod_section)
+        self.assertIn("Port 2222", match_prod_section)
+        self.assertIn("IdentityFile ~/.ssh/id_prod", match_prod_section)
+        self.assertIn("IdentitiesOnly yes", match_prod_section)
+        self.assertIn("ProxyJump bastion", match_prod_section)
 
 
 if __name__ == "__main__":

@@ -155,6 +155,65 @@ class QtGuiTests(unittest.TestCase):
                 finally:
                     dialog.close()
 
+    def test_group_drag_drop_reordering_and_match_defaults(self) -> None:
+        from PySide6.QtWidgets import QTableWidgetItem
+
+        from sshcnfgr.gui.main_window import SSHCnfgrWindow
+
+        db = HostDatabase(
+            groups=[
+                HostGroup(name="lab", description="Test"),
+                HostGroup(name="prod", description="Wichtig", identity="id_a"),
+            ],
+            identities=[IdentityProfile(name="id_a", identity_file="~/.ssh/id_a")],
+            hosts=[
+                HostEntry(id="h1", name="a-lab", host_name="192.168.1.10", groups=["lab"]),
+                HostEntry(id="h2", name="z-prod", host_name="10.0.0.10", groups=["prod"]),
+            ],
+        )
+
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            db_path = Path(tmp_dir) / "sshcnfgr.toml"
+            save_database(db, db_path, backup=False)
+
+            def _save(updated_db: HostDatabase) -> None:
+                save_database(updated_db, db_path)
+
+            with patch("sshcnfgr.gui.main_window.save_database", side_effect=_save):
+                window = SSHCnfgrWindow(db=load_database(db_path))
+                try:
+                    # Ausgangslage: lab vor prod
+                    self.assertEqual(window.hosts_table.item(0, 0).text(), "a-lab")  # type: ignore[union-attr]
+
+                    # Drag & Drop simulieren: prod (Zeile 1) auf Position 0 verschieben.
+                    window.groups_table.row_moved.emit(1, 0)
+                    self.assertEqual([g.name for g in window.db.groups], ["prod", "lab"])
+                    self.assertEqual(window.hosts_table.item(0, 0).text(), "z-prod")  # type: ignore[union-attr]
+
+                    # Gruppen-Defaults (User, Port, Extra-Option) fuer prod speichern.
+                    window.groups_table.selectRow(0)
+                    window.in_group_user.setText("ubuntu")
+                    window.in_group_port.setText("2222")
+                    row = window.group_extra_options_table.rowCount()
+                    window.group_extra_options_table.insertRow(row)
+                    window.group_extra_options_table.setItem(
+                        row, 0, QTableWidgetItem("IdentitiesOnly")
+                    )
+                    window.group_extra_options_table.setItem(row, 1, QTableWidgetItem("yes"))
+                    window.action_save_group()
+
+                    preview = window.preview_edit.toPlainText()
+                    self.assertLess(preview.index("Host z-prod"), preview.index("Host a-lab"))
+                    self.assertIn("Match originalhost z-prod", preview)
+                    self.assertIn("IdentitiesOnly yes", preview)
+
+                    reloaded = load_database(db_path)
+                    self.assertEqual([g.name for g in reloaded.groups], ["prod", "lab"])
+                    self.assertEqual(reloaded.groups[0].user, "ubuntu")
+                    self.assertEqual(reloaded.groups[0].port, 2222)
+                finally:
+                    window.close()
+
 
 if __name__ == "__main__":
     unittest.main()

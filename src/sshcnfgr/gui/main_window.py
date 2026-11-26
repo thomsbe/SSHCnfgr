@@ -3,8 +3,8 @@ from __future__ import annotations
 import copy
 from pathlib import Path
 
-from PySide6.QtCore import Qt
-from PySide6.QtGui import QAction, QColor, QFont, QKeySequence
+from PySide6.QtCore import Qt, Signal
+from PySide6.QtGui import QAction, QColor, QDropEvent, QFont, QKeySequence
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QCheckBox,
@@ -72,6 +72,53 @@ def _configure_readonly_table(table: QTableWidget, headers: list[str]) -> None:
     table.verticalHeader().setVisible(False)
     table.horizontalHeader().setStretchLastSection(True)
     table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Interactive)
+
+
+class ReorderableTableWidget(QTableWidget):
+    """QTableWidget mit sauberem Zeilen-Drag&Drop (ohne Zellen-Ueberschreiben)."""
+
+    row_moved = Signal(int, int)
+
+    def __init__(self, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self.setDragEnabled(True)
+        self.viewport().setAcceptDrops(True)
+        self.setDropIndicatorShown(True)
+        self.setDragDropMode(QAbstractItemView.DragDropMode.InternalMove)
+        self.setDragDropOverwriteMode(False)
+        self.setDefaultDropAction(Qt.DropAction.MoveAction)
+
+    def dropEvent(self, event: QDropEvent) -> None:
+        if event.source() is not self:
+            event.ignore()
+            return
+
+        selected_rows = sorted({idx.row() for idx in self.selectedIndexes()})
+        if not selected_rows:
+            event.ignore()
+            return
+        from_row = selected_rows[0]
+
+        drop_pos = event.position().toPoint()
+        target_index = self.indexAt(drop_pos)
+        indicator = self.dropIndicatorPosition()
+
+        if (
+            not target_index.isValid()
+            or indicator == QAbstractItemView.DropIndicatorPosition.OnViewport
+        ):
+            to_row = self.rowCount() - 1
+        else:
+            to_row = target_index.row()
+            if indicator == QAbstractItemView.DropIndicatorPosition.BelowItem:
+                to_row += 1
+            if from_row < to_row:
+                to_row -= 1
+
+        to_row = max(0, min(to_row, self.rowCount() - 1))
+        event.ignore()
+        if from_row != to_row:
+            self.row_moved.emit(from_row, to_row)
 
 
 class SSHCnfgrWindow(QMainWindow):
@@ -239,7 +286,9 @@ class SSHCnfgrWindow(QMainWindow):
         id_file_row.addWidget(btn_pick_key)
 
         self.in_host_groups = QLineEdit(details_group)
-        self.in_host_groups.setPlaceholderText("Kommagetrennt, z. B. prod, db")
+        self.in_host_groups.setPlaceholderText(
+            "Kommagetrennt, z. B. prod, db (erste Gruppe bestimmt die Sortierung)"
+        )
 
         self.in_host_tags = QLineEdit(details_group)
         self.in_host_tags.setPlaceholderText("Kommagetrennt, z. B. k8s, web")
@@ -316,7 +365,7 @@ class SSHCnfgrWindow(QMainWindow):
         return tab
 
     # ------------------------------------------------------------------
-    # Tab 2: Gruppen
+    # Tab 2: Gruppen (mit Drag & Drop Reihenfolge & Match-Defaults)
     # ------------------------------------------------------------------
     def _build_groups_tab(self) -> QWidget:
         tab = QWidget(self)
@@ -326,27 +375,46 @@ class SSHCnfgrWindow(QMainWindow):
         left_widget = QWidget(splitter)
         left_layout = QVBoxLayout(left_widget)
 
-        self.groups_table = QTableWidget(left_widget)
+        hint_lbl = QLabel(
+            "Tipp: Gruppen per Drag & Drop (oder ▲ / ▼) anordnen — bestimmt die Reihenfolge "
+            "in config.generated und VS Code.",
+            left_widget,
+        )
+        hint_lbl.setWordWrap(True)
+        left_layout.addWidget(hint_lbl)
+
+        self.groups_table = ReorderableTableWidget(left_widget)
         _configure_readonly_table(
             self.groups_table,
-            ["Gruppe", "Beschreibung", "Default-Identity", "Hosts"],
+            ["#", "Gruppe", "Beschreibung", "Identity", "User", "Port", "Extra", "Hosts"],
         )
+        self.groups_table.setColumnWidth(0, 36)
         self.groups_table.itemSelectionChanged.connect(self._on_group_selection_changed)
+        self.groups_table.row_moved.connect(self._on_group_row_moved)
         left_layout.addWidget(self.groups_table, stretch=1)
 
         group_list_btns = QHBoxLayout()
         btn_new_group = QPushButton("Neue Gruppe", left_widget)
         btn_new_group.clicked.connect(self.action_new_group)
+        self.btn_group_up = QPushButton("▲ Hoch", left_widget)
+        self.btn_group_up.clicked.connect(self.action_move_group_up)
+        self.btn_group_down = QPushButton("▼ Runter", left_widget)
+        self.btn_group_down.clicked.connect(self.action_move_group_down)
         btn_del_group = QPushButton("Loeschen", left_widget)
         btn_del_group.clicked.connect(self.action_delete_group)
         group_list_btns.addWidget(btn_new_group)
-        group_list_btns.addWidget(btn_del_group)
+        group_list_btns.addWidget(self.btn_group_up)
+        group_list_btns.addWidget(self.btn_group_down)
         group_list_btns.addStretch(1)
+        group_list_btns.addWidget(btn_del_group)
         left_layout.addLayout(group_list_btns)
 
-        right_widget = QWidget(splitter)
+        right_scroll = QScrollArea(splitter)
+        right_scroll.setWidgetResizable(True)
+        right_widget = QWidget(right_scroll)
         right_layout = QVBoxLayout(right_widget)
-        box = QGroupBox("Gruppen-Details", right_widget)
+
+        box = QGroupBox("Gruppen-Details & Match-Defaults", right_widget)
         form = QFormLayout(box)
 
         self.in_group_name = QLineEdit(box)
@@ -354,20 +422,54 @@ class SSHCnfgrWindow(QMainWindow):
         self.in_group_desc = QLineEdit(box)
         self.in_group_desc.setPlaceholderText("optionale Beschreibung")
         self.in_group_identity = QComboBox(box)
+        self.in_group_user = QLineEdit(box)
+        self.in_group_user.setPlaceholderText("optionaler Default-User fuer Match-Regel")
+        self.in_group_port = QLineEdit(box)
+        self.in_group_port.setPlaceholderText("optionaler Default-Port (1-65535)")
 
         form.addRow("Name:", self.in_group_name)
         form.addRow("Beschreibung:", self.in_group_desc)
         form.addRow("Default-Identity:", self.in_group_identity)
+        form.addRow("Default-User:", self.in_group_user)
+        form.addRow("Default-Port:", self.in_group_port)
         right_layout.addWidget(box)
+
+        extra_group = QGroupBox(
+            "Gruppen Extra-Optionen (Match originalhost, z. B. IdentitiesOnly, ProxyJump)",
+            right_widget,
+        )
+        extra_layout = QVBoxLayout(extra_group)
+        self.group_extra_options_table = QTableWidget(0, 2, extra_group)
+        self.group_extra_options_table.setHorizontalHeaderLabels(["Direktive", "Wert"])
+        self.group_extra_options_table.verticalHeader().setVisible(False)
+        self.group_extra_options_table.horizontalHeader().setStretchLastSection(True)
+        self.group_extra_options_table.setSelectionBehavior(
+            QAbstractItemView.SelectionBehavior.SelectRows
+        )
+        self.group_extra_options_table.setMinimumHeight(130)
+        extra_layout.addWidget(self.group_extra_options_table)
+
+        g_extra_btns = QHBoxLayout()
+        btn_g_add_extra = QPushButton("+ Option", extra_group)
+        btn_g_add_extra.clicked.connect(self._add_group_extra_option_row)
+        btn_g_rm_extra = QPushButton("- Entfernen", extra_group)
+        btn_g_rm_extra.clicked.connect(self._remove_group_extra_option_row)
+        g_extra_btns.addWidget(btn_g_add_extra)
+        g_extra_btns.addWidget(btn_g_rm_extra)
+        g_extra_btns.addStretch(1)
+        extra_layout.addLayout(g_extra_btns)
+        right_layout.addWidget(extra_group)
 
         btn_save_group = QPushButton("Gruppe speichern", right_widget)
         btn_save_group.clicked.connect(self.action_save_group)
         right_layout.addWidget(btn_save_group)
         right_layout.addStretch(1)
 
+        right_scroll.setWidget(right_widget)
+
         splitter.addWidget(left_widget)
-        splitter.addWidget(right_widget)
-        splitter.setSizes([600, 500])
+        splitter.addWidget(right_scroll)
+        splitter.setSizes([640, 480])
         root_layout.addWidget(splitter)
         return tab
 
@@ -544,7 +646,9 @@ class SSHCnfgrWindow(QMainWindow):
         needle = self.host_search_input.text().strip().lower()
         only_active = self.host_only_active_cb.isChecked()
         hosts = [
-            h for h in self.db.sorted_hosts() if self._host_matches_filter(h, needle, only_active)
+            h
+            for h in self.db.ordered_hosts_by_group()
+            if self._host_matches_filter(h, needle, only_active)
         ]
 
         table = self.hosts_table
@@ -575,7 +679,7 @@ class SSHCnfgrWindow(QMainWindow):
                     _make_item(
                         user_text,
                         muted=user_muted,
-                        tooltip="Geerbt aus globalen Optionen" if user_muted else None,
+                        tooltip="Geerbt via Gruppe oder Host *" if user_muted else None,
                     ),
                 )
                 table.setItem(
@@ -584,7 +688,7 @@ class SSHCnfgrWindow(QMainWindow):
                     _make_item(
                         port_text,
                         muted=port_muted,
-                        tooltip="Effektiver Port (Default/Global)" if port_muted else None,
+                        tooltip="Effektiver Port (Gruppe/Global/Default)" if port_muted else None,
                     ),
                 )
                 table.setItem(
@@ -603,7 +707,6 @@ class SSHCnfgrWindow(QMainWindow):
                 table.selectRow(selected_row)
         finally:
             table.blockSignals(False)
-            table.setSortingEnabled(True)
 
     def _describe_identity(self, host: HostEntry) -> tuple[str, bool, str | None]:
         if host.identity_file:
@@ -619,7 +722,7 @@ class SSHCnfgrWindow(QMainWindow):
         return "", False, None
 
     def _refresh_groups_table(self) -> None:
-        groups = self.db.sorted_groups()
+        groups = self.db.ordered_groups()
         table = self.groups_table
         table.blockSignals(True)
         try:
@@ -629,10 +732,18 @@ class SSHCnfgrWindow(QMainWindow):
                 if group.name == self.selected_group_name:
                     selected_row = row
                 host_count = sum(1 for h in self.db.hosts if group.name in h.groups)
-                table.setItem(row, 0, _make_item(group.name, user_data=group.name))
-                table.setItem(row, 1, _make_item(group.description))
-                table.setItem(row, 2, _make_item(group.identity or ""))
-                table.setItem(row, 3, _make_item(str(host_count)))
+                extra_summary = ", ".join(
+                    f"{k}={v}"
+                    for k, v in sorted(group.extra_options.items(), key=lambda p: p[0].lower())
+                )
+                table.setItem(row, 0, _make_item(str(row + 1), user_data=group.name))
+                table.setItem(row, 1, _make_item(group.name, user_data=group.name))
+                table.setItem(row, 2, _make_item(group.description))
+                table.setItem(row, 3, _make_item(group.identity or ""))
+                table.setItem(row, 4, _make_item(group.user or ""))
+                table.setItem(row, 5, _make_item(str(group.port) if group.port is not None else ""))
+                table.setItem(row, 6, _make_item(extra_summary))
+                table.setItem(row, 7, _make_item(str(host_count)))
             if selected_row >= 0:
                 table.selectRow(selected_row)
         finally:
@@ -888,17 +999,74 @@ class SSHCnfgrWindow(QMainWindow):
         selected_rows = self.groups_table.selectionModel().selectedRows()
         if not selected_rows:
             return
-        item = self.groups_table.item(selected_rows[0].row(), 0)
+        item = self.groups_table.item(selected_rows[0].row(), 1)
         if item is None:
             return
         group_name = str(item.data(Qt.ItemDataRole.UserRole))
         group = self.db.get_group_by_name(group_name)
         if group is None:
             return
+        self._load_group_into_form(group)
+
+    def _load_group_into_form(self, group: HostGroup) -> None:
         self.selected_group_name = group.name
         self.in_group_name.setText(group.name)
         self.in_group_desc.setText(group.description)
         self._populate_identity_combo(self.in_group_identity, group.identity)
+        self.in_group_user.setText(group.user or "")
+        self.in_group_port.setText(str(group.port) if group.port is not None else "")
+
+        self.group_extra_options_table.setRowCount(0)
+        for key, value in sorted(group.extra_options.items(), key=lambda pair: pair[0].lower()):
+            row = self.group_extra_options_table.rowCount()
+            self.group_extra_options_table.insertRow(row)
+            self.group_extra_options_table.setItem(row, 0, QTableWidgetItem(key))
+            self.group_extra_options_table.setItem(row, 1, QTableWidgetItem(value))
+
+    def _add_group_extra_option_row(self) -> None:
+        row = self.group_extra_options_table.rowCount()
+        self.group_extra_options_table.insertRow(row)
+        self.group_extra_options_table.setItem(row, 0, QTableWidgetItem(""))
+        self.group_extra_options_table.setItem(row, 1, QTableWidgetItem(""))
+        self.group_extra_options_table.editItem(self.group_extra_options_table.item(row, 0))
+
+    def _remove_group_extra_option_row(self) -> None:
+        rows = sorted(
+            {idx.row() for idx in self.group_extra_options_table.selectionModel().selectedRows()},
+            reverse=True,
+        )
+        for row in rows:
+            self.group_extra_options_table.removeRow(row)
+
+    def _on_group_row_moved(self, from_row: int, to_row: int) -> None:
+        candidate_db = copy.deepcopy(self.db)
+        if not candidate_db.move_group(from_row, to_row):
+            return
+        moved_group = candidate_db.groups[to_row]
+        if not self._commit_db(candidate_db):
+            return
+        self.selected_group_name = moved_group.name
+        self._refresh_all()
+        self._load_group_into_form(moved_group)
+        self._set_status(f"Gruppe '{moved_group.name}' auf Position {to_row + 1} verschoben")
+
+    def _selected_group_row(self) -> int | None:
+        selected_rows = self.groups_table.selectionModel().selectedRows()
+        if not selected_rows:
+            return None
+        return selected_rows[0].row()
+
+    def action_move_group_up(self) -> None:
+        row = self._selected_group_row()
+        if row is None or row <= 0:
+            return
+        self._on_group_row_moved(row, row - 1)
+
+    def action_move_group_down(self) -> None:
+        row = self._selected_group_row()
+        if row is None or row >= len(self.db.groups) - 1:
+            return
+        self._on_group_row_moved(row, row + 1)
 
     def action_new_group(self) -> None:
         self.selected_group_name = None
@@ -906,6 +1074,9 @@ class SSHCnfgrWindow(QMainWindow):
         self.in_group_name.clear()
         self.in_group_desc.clear()
         self._populate_identity_combo(self.in_group_identity, None)
+        self.in_group_user.clear()
+        self.in_group_port.clear()
+        self.group_extra_options_table.setRowCount(0)
         self.in_group_name.setFocus()
 
     def action_save_group(self) -> None:
@@ -913,6 +1084,36 @@ class SSHCnfgrWindow(QMainWindow):
         desc = self.in_group_desc.text().strip()
         identity_data = self.in_group_identity.currentData()
         identity = str(identity_data) if identity_data else None
+        user = self.in_group_user.text().strip() or None
+
+        form_errors: list[str] = []
+        port: int | None = None
+        port_raw = self.in_group_port.text().strip()
+        if port_raw:
+            try:
+                port = int(port_raw)
+            except ValueError:
+                form_errors.append(f"Port ist keine Zahl: {port_raw}")
+
+        extra_options: dict[str, str] = {}
+        for row in range(self.group_extra_options_table.rowCount()):
+            key_item = self.group_extra_options_table.item(row, 0)
+            val_item = self.group_extra_options_table.item(row, 1)
+            key = key_item.text().strip() if key_item else ""
+            val = val_item.text().strip() if val_item else ""
+            if not key and not val:
+                continue
+            if not key or not val:
+                form_errors.append(f"Gruppen-Option in Zeile {row + 1} ist unvollstaendig")
+                continue
+            if any(ch.isspace() for ch in key):
+                form_errors.append(f"Gruppen-Option '{key}' darf keine Leerzeichen enthalten")
+                continue
+            extra_options[key] = val
+
+        if form_errors:
+            QMessageBox.warning(self, "Validierungsfehler", "\n".join(form_errors))
+            return
 
         candidate_db = copy.deepcopy(self.db)
         existing = (
@@ -921,12 +1122,24 @@ class SSHCnfgrWindow(QMainWindow):
             else candidate_db.get_group_by_name(name)
         )
         if existing is None:
-            candidate_db.groups.append(HostGroup(name=name, description=desc, identity=identity))
+            candidate_db.groups.append(
+                HostGroup(
+                    name=name,
+                    description=desc,
+                    identity=identity,
+                    user=user,
+                    port=port,
+                    extra_options=extra_options,
+                )
+            )
         else:
             old_name = existing.name
             existing.name = name
             existing.description = desc
             existing.identity = identity
+            existing.user = user
+            existing.port = port
+            existing.extra_options = extra_options
             if old_name != name:
                 for host in candidate_db.hosts:
                     host.groups = [name if g == old_name else g for g in host.groups]

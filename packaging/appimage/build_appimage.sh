@@ -113,8 +113,11 @@ echo "==> Erzeuge AppImage mit Update-Info: ${UPDATE_INFO}"
 )
 
 if [ ! -f "${OUT_APPIMAGE}.zsync" ]; then
-  echo "Fehler: ${OUT_APPIMAGE}.zsync wurde nicht erzeugt (ist zsync installiert?)" >&2
-  exit 1
+  echo "==> Erzeuge .zsync direkt mit zsyncmake..."
+  (
+    cd "$DIST_DIR"
+    zsyncmake -u "$OUT_FILENAME" -o "${OUT_FILENAME}.zsync" "$OUT_FILENAME"
+  )
 fi
 
 (cd "$DIST_DIR" && sha256sum "$(basename "$OUT_APPIMAGE")" "$(basename "${OUT_APPIMAGE}.zsync")" > "SSHCnfgr-${VERSION}-${ARCH}.SHA256SUMS.txt")

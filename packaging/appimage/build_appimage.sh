@@ -96,14 +96,21 @@ if [ ! -x "$APPIMAGETOOL" ]; then
   chmod +x "$APPIMAGETOOL"
 fi
 
+OUT_FILENAME="SSHCnfgr-${VERSION}-${ARCH}.AppImage"
+OUT_APPIMAGE="$DIST_DIR/$OUT_FILENAME"
 UPDATE_INFO="gh-releases-zsync|${REPO_OWNER}|${REPO_NAME}|${UPDATE_TAG}|SSHCnfgr-*-${ARCH}.AppImage.zsync"
 echo "==> Erzeuge AppImage mit Update-Info: ${UPDATE_INFO}"
 
-ARCH="$ARCH" APPIMAGE_EXTRACT_AND_RUN=1 "$APPIMAGETOOL" \
-  --no-appstream \
-  -u "$UPDATE_INFO" \
-  "$APPDIR" \
-  "$OUT_APPIMAGE"
+# Aus DIST_DIR heraus ausfuehren, damit zsyncmake die .zsync-Datei direkt neben
+# dem AppImage ablegt und einen sauberen relativen Dateinamen einbettet.
+(
+  cd "$DIST_DIR"
+  ARCH="$ARCH" APPIMAGE_EXTRACT_AND_RUN=1 "$APPIMAGETOOL" \
+    --no-appstream \
+    -u "$UPDATE_INFO" \
+    "$APPDIR" \
+    "$OUT_FILENAME"
+)
 
 if [ ! -f "${OUT_APPIMAGE}.zsync" ]; then
   echo "Fehler: ${OUT_APPIMAGE}.zsync wurde nicht erzeugt (ist zsync installiert?)" >&2

@@ -9,6 +9,10 @@ on:
         description: "Update channel tag embedded in gh-releases-zsync (default: latest)"
         required: false
         default: "latest"
+      release_tag:
+        description: "Optional existing GitHub release tag to attach built assets to"
+        required: false
+        default: ""
 
 permissions:
   contents: write
@@ -69,11 +73,12 @@ jobs:
             dist/SSHCnfgr-*-x86_64.SHA256SUMS.txt
 
       - name: Attach AppImage and zsync to GitHub Release
-        if: github.event_name == 'release'
+        if: github.event_name == 'release' || inputs.release_tag != ''
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TARGET_TAG: ${{ github.event.release.tag_name || inputs.release_tag }}
         run: |
-          gh release upload "${{ github.event.release.tag_name }}" \
+          gh release upload "$TARGET_TAG" \
             dist/SSHCnfgr-*-x86_64.AppImage \
             dist/SSHCnfgr-*-x86_64.AppImage.zsync \
             dist/SSHCnfgr-*-x86_64.SHA256SUMS.txt \

@@ -1,12 +1,37 @@
 from __future__ import annotations
 
+import shutil
 import tomllib
+from datetime import datetime
 from pathlib import Path
 
 import tomli_w
 
 from .model import HostDatabase, HostEntry, HostGroup, IdentityProfile
-from .paths import DB_PATH
+from .paths import (
+    DB_PATH,
+    LEGACY_DB_PATH,
+    SSH_DIR,
+    ensure_private_dir,
+    set_private_permissions,
+)
+
+
+def create_backup(path: Path) -> Path | None:
+    """Erstellt vor dem Ueberschreiben ein Zeitstempel-Backup einer vorhandenen Datei."""
+    if not path.exists():
+        return None
+
+    timestamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+    backup_path = path.with_name(f"{path.name}.bak.{timestamp}")
+    counter = 1
+    while backup_path.exists():
+        backup_path = path.with_name(f"{path.name}.bak.{timestamp}-{counter}")
+        counter += 1
+
+    shutil.copy2(path, backup_path)
+    set_private_permissions(backup_path)
+    return backup_path
 
 
 def _host_to_dict(host: HostEntry) -> dict[str, object]:
@@ -97,19 +122,32 @@ def _identity_from_dict(data: dict[str, object]) -> IdentityProfile:
     )
 
 
-def load_database(path: Path = DB_PATH) -> HostDatabase:
-    if not path.exists():
-        return HostDatabase()
+def load_database(path: Path | None = None) -> HostDatabase:
+    target = path if path is not None else DB_PATH
+    if not target.exists():
+        # Nahtlose Migration: falls ~/.ssh/sshcnfgr.toml noch fehlt, aber die alte
+        # ~/.config/sshcnfgr/hosts.toml vorhanden ist, diese einmalig als Quelle laden.
+        if path is None and LEGACY_DB_PATH.exists():
+            target = LEGACY_DB_PATH
+        else:
+            return HostDatabase()
 
-    raw = tomllib.loads(path.read_text(encoding="utf-8"))
+    raw = tomllib.loads(target.read_text(encoding="utf-8"))
     group_items = raw.get("groups", [])
     identity_items = raw.get("identities", [])
     global_options_raw = raw.get("global_options", {})
     host_items = raw.get("hosts", [])
+    ui_raw = raw.get("ui", {})
 
     global_options: dict[str, str] = {}
     if isinstance(global_options_raw, dict):
         global_options = {str(k): str(v) for k, v in global_options_raw.items()}
+
+    ui: dict[str, str | bool] = {}
+    if isinstance(ui_raw, dict):
+        for k, v in ui_raw.items():
+            if isinstance(v, (str, bool)):
+                ui[str(k)] = v
 
     groups: list[HostGroup] = []
     for item in group_items:
@@ -130,13 +168,14 @@ def load_database(path: Path = DB_PATH) -> HostDatabase:
         if isinstance(item, dict):
             hosts.append(_host_from_dict(item))
 
-    # Rueckwaertskompatibilitaet: existierende hosts.toml ohne [groups]
+    # Rueckwaertskompatibilitaet: existierende TOML ohne [[groups]]
     # wird automatisch mit referenzierten Gruppen aufgefuellt.
     db = HostDatabase(
         groups=groups,
         identities=identities,
         global_options=global_options,
         hosts=hosts,
+        ui=ui,
     )
     referenced_groups = sorted({group for host in hosts for group in host.groups})
     db.ensure_groups(referenced_groups)
@@ -144,15 +183,40 @@ def load_database(path: Path = DB_PATH) -> HostDatabase:
     return db
 
 
-def save_database(db: HostDatabase, path: Path = DB_PATH) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    payload = {
+def _read_existing_ui(path: Path) -> dict[str, str | bool]:
+    if not path.exists():
+        return {}
+    try:
+        raw = tomllib.loads(path.read_text(encoding="utf-8"))
+    except (OSError, tomllib.TOMLDecodeError):
+        return {}
+    ui_raw = raw.get("ui", {})
+    if not isinstance(ui_raw, dict):
+        return {}
+    return {str(k): v for k, v in ui_raw.items() if isinstance(v, (str, bool))}
+
+
+def save_database(db: HostDatabase, path: Path = DB_PATH, *, backup: bool = True) -> None:
+    if path.parent == SSH_DIR:
+        ensure_private_dir(path.parent)
+    else:
+        path.parent.mkdir(parents=True, exist_ok=True)
+
+    ui_section = db.ui if db.ui else _read_existing_ui(path)
+
+    if backup:
+        create_backup(path)
+
+    payload: dict[str, object] = {
         "groups": [_group_to_dict(group) for group in db.sorted_groups()],
         "identities": [_identity_to_dict(identity) for identity in db.sorted_identities()],
         "global_options": db.global_options,
-        "hosts": [_host_to_dict(host) for host in db.hosts],
+        "hosts": [_host_to_dict(host) for host in db.sorted_hosts()],
     }
+    if ui_section:
+        payload["ui"] = ui_section
 
-    tmp_path = path.with_suffix(path.suffix + ".tmp")
+    tmp_path = path.with_name(path.name + ".tmp")
     tmp_path.write_text(tomli_w.dumps(payload), encoding="utf-8")
+    set_private_permissions(tmp_path)
     tmp_path.replace(path)

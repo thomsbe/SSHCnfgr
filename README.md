@@ -1,230 +1,163 @@
 # SSHCnfgr
 
-SSHCnfgr ist mein persoenliches Demo- und Lernprojekt fuer Python-TUIs.
+> **English speaker?** Jump to the [English Summary](#english-summary) at the bottom.
 
-Das Projekt zeigt, wie man mit Textual, Click und Loguru ein echtes, aber ueberschaubares Tool baut:
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](https://github.com/thomsbe/SSHCnfgr/blob/main/LICENSE)
+[![Python 3.12+](https://img.shields.io/badge/Python-3.12%2B-3776AB.svg)](https://www.python.org/)
+[![Status: Beta](https://img.shields.io/badge/Status-0.1.0b1%20Beta-orange.svg)](https://pypi.org/project/sshcnfgr/)
 
-- SSH-Hosts, Gruppen und Identities in einer TOML-Datenbasis verwalten
-- daraus eine OpenSSH-Config generieren
-- bestehende SSH-Configs importieren
+**SSHCnfgr** verwaltet deine OpenSSH-Hosts, Gruppen und Identities über eine einzige, saubere TOML-Datei (`~/.ssh/sshcnfgr.toml`) — per **Textual-TUI**, optionaler **Qt6-Desktop-GUI** (Wayland/X11/macOS/Windows) oder **Click-CLI**.
 
-Ziel ist nicht, ein Produkt fuer jedermann zu bauen, sondern neue Dinge in Python/TUI zu lernen.
-Wenn dabei ein kleines nuetzliches Tool herauskommt: super. Wenn nicht: auch okay.
+## Highlights
 
-## Arbeitsweise
+- **Eine einzige Datei neben `~/.ssh/config`:** Alles liegt in `~/.ssh/sshcnfgr.toml` (auf Linux/macOS automatisch mit `0600`-Rechten, unter Windows in `%USERPROFILE%\.ssh\sshcnfgr.toml`) — ideal für den direkten Start per `uvx`.
+- **TOML als Source of Truth:** Deaktivierte Hosts bleiben in der Datenbank erhalten, landen aber nicht in der generierten OpenSSH-Config (`~/.ssh/config.generated`, ebenfalls `0600`).
+- **Dubletten finden & zusammenführen:** Erkennt Hosts mit gleichem Ziel (`HostName` + effektiver `Port` + effektiver `User`), zeigt Feld-Konflikte übersichtlich an und führt Einträge interaktiv zusammen (übrige Dubletten wahlweise deaktivieren oder löschen).
+- **TUI, Qt6-GUI & CLI:** Im Terminal mit Textual, auf dem Desktop optional mit PySide6/Qt6 (Live-Suche, Gruppen-/Identity-Tabs, `extra_options`-Editor, Config-Vorschau) oder skriptbar über die CLI.
+- **Sicherheitsnetz:** Keine Speicherung privater Schlüssel-Inhalte (nur Pfade & `.pub`-Metadaten), atomares Schreiben und automatische Zeitstempel-Backups (`*.bak.YYYYMMDD-HHMMSS`) vor jedem Überschreiben.
 
-- AI-assisted Code ist hier explizit Teil des Plans.
-- Ich lasse mir von KI erklaeren, was passiert, und nachvollziehe die Schritte selbst.
-- Der Code wird bewusst geprueft und verstanden.
-- Es ist nicht "vibe coded".
+---
 
-## Status
+## Schnellstart mit `uv` / `uvx`
 
-Aktueller Stand ist ein fruehes, lauffaehiges MVP mit Fokus auf Lernbarkeit und klarer Architektur.
+> **Hinweis zur Beta-Version (`0.1.0b1`):** Da es sich um eine Vorabversion handelt, benötigt `uvx` / `uv tool install` aktuell das Flag `--prerelease=allow`. Ab dem regulären `0.1.0`-Release entfällt dieses Flag.
 
-- Aktuelle Paketversion: 0.1.0a1 (Alpha)
-
-## Warum diese Architektur?
-
-- TOML ist die Source of Truth
-- Die generierte SSH-Config ist ein Build-Artefakt
-- Deaktivierte Hosts bleiben in der Datenbank, landen aber nicht in der generierten Datei
-
-## Doku im Repo
-
-- Produktidee und Pflichtenheft: doc/project.md
-- Hinweise fuer LLMs/Agenten: AGENTS.md
-
-## uv auf Linux installieren
-
-Empfohlener Weg (offizieller Installer):
+### Ohne Installation direkt ausführen (`uvx`)
 
 ```bash
-curl -LsSf https://astral.sh/uv/install.sh | sh
+# Textual-TUI direkt starten (legt ~/.ssh/sshcnfgr.toml bei Bedarf an)
+uvx --prerelease=allow sshcnfgr
+
+# Optionale Qt6 Desktop-GUI starten (Wayland / X11 / macOS / Windows)
+uvx --prerelease=allow --from "sshcnfgr[qt]" sshcnfgr gui
+
+# Bestehende ~/.ssh/config importieren
+uvx --prerelease=allow sshcnfgr import --source ~/.ssh/config
 ```
 
-Alternative mit wget:
+### Dauerhaft als CLI-Tool installieren (`uv tool install`)
 
 ```bash
-wget -qO- https://astral.sh/uv/install.sh | sh
+# Terminal-Version (TUI + CLI)
+uv tool install --prerelease=allow sshcnfgr
+
+# Inklusive Qt6 Desktop-GUI
+uv tool install --prerelease=allow "sshcnfgr[qt]"
+
+# Danach direkt nutzbar:
+sshcnfgr            # startet die TUI
+sshcnfgr gui        # startet die Qt6-GUI
+sshcnfgr --help     # zeigt alle Kommandos
 ```
 
-Danach Verfuegbarkeit pruefen:
+*(Falls `uv` noch nicht installiert ist: `curl -LsSf https://astral.sh/uv/install.sh | sh` auf Linux/macOS bzw. `powershell -ExecutionPolicy ByPass -c "irm https://astral.sh/uv/install.ps1 | iex"` unter Windows.)*
+
+---
+
+## Typischer Ablauf
+
+1. **Vorhandene SSH-Config importieren** (deine `~/.ssh/config` wird nur gelesen):
+   ```bash
+   sshcnfgr import --source ~/.ssh/config
+   ```
+2. **Lokale SSH-Keys erfassen** (nur Pfade & `.pub`-Vorschau, keine Private Keys):
+   ```bash
+   sshcnfgr identities scan
+   ```
+3. **Hosts pflegen & Dubletten aufräumen:**
+   - In der TUI (`sshcnfgr`) mit **`Ctrl+U`** oder Button **„Dubletten“**
+   - Oder in der Qt6-GUI (`sshcnfgr gui`) über **„Dubletten…“** (`Ctrl+U`)
+4. **OpenSSH-Config erzeugen:**
+   ```bash
+   sshcnfgr generate
+   ```
+   Standard-Ausgabe ist `~/.ssh/config.generated` (`0600`). Du kannst sie direkt per `Include` in deiner `~/.ssh/config` einbinden:
+   ```sshconfig
+   Include config.generated
+   ```
+
+---
+
+## CLI-Übersicht
 
 ```bash
-uv --version
+sshcnfgr                                              # TUI direkt starten
+sshcnfgr tui                                          # TUI starten
+sshcnfgr gui                                          # Qt6 Desktop-GUI starten ([qt]-Extra)
+sshcnfgr import --source ~/.ssh/config                # OpenSSH-Config importieren
+sshcnfgr generate --output ~/.ssh/config.generated    # OpenSSH-Config generieren
+sshcnfgr identities scan                              # Keys aus ~/.ssh erfassen
+sshcnfgr identities list                              # Bekannte Identities anzeigen
+sshcnfgr groups set-identity prod id_ed25519          # Gruppen-Default-Identity setzen
+sshcnfgr --version                                    # Version anzeigen
 ```
 
-Wenn uv nach der Installation nicht gefunden wird, eine neue Shell oeffnen oder die Shell-Config neu laden.
-
-## Quickstart mit uv
-
+Optionales File-Logging (Standard: keine Logdatei):
 ```bash
-uv sync
-uv run sshcnfgr --help
-uv run sshcnfgr tui
+sshcnfgr --verbose --log-file /tmp/sshcnfgr.log generate
 ```
 
-## Installation als Tool
+---
+
+## Dateien & Migration
+
+| Datei | Zweck |
+| --- | --- |
+| `~/.ssh/sshcnfgr.toml` | Zentrale Source of Truth (Hosts, Gruppen, Identities, `global_options`, `[ui]`), `0600` auf POSIX |
+| `~/.ssh/config.generated` | Generierte OpenSSH-Config (nur aktive Hosts, `Host *` am Ende), `0600` auf POSIX |
+| `*.bak.YYYYMMDD-HHMMSS` | Automatisches Zeitstempel-Backup vor jedem Überschreiben |
+
+> **Migration aus `0.1.0a1`:** Falls `~/.ssh/sshcnfgr.toml` noch nicht existiert, aber noch eine ältere `~/.config/sshcnfgr/hosts.toml` vorhanden ist, lädt SSHCnfgr diese automatisch und schreibt beim nächsten Speichern nach `~/.ssh/sshcnfgr.toml`.
+
+---
+
+## Entwicklung & Release
 
 ```bash
-uv tool install .
-sshcnfgr --help
-```
+git clone https://github.com/thomsbe/SSHCnfgr.git
+cd SSHCnfgr
+uv sync --extra dev --extra qt
 
-## Nutzung unter Linux (aktueller Stand)
-
-Fuer Anwender, die den aktuellen MVP ausprobieren wollen:
-
-1. uv installieren (siehe oben)
-2. Projekt klonen
-3. Im Projektverzeichnis ausfuehren:
-
-```bash
-uv sync
-uv run sshcnfgr --help
-uv run sshcnfgr tui
-```
-
-Optional mit bestehender SSH-Config starten:
-
-```bash
-uv run sshcnfgr import --source ~/.ssh/config
-uv run sshcnfgr identities scan
-uv run sshcnfgr generate --output ~/.config/sshcnfgr/config.generated
-```
-
-Hinweise:
-
-- Source of Truth ist ~/.config/sshcnfgr/hosts.toml
-- Generierte Datei ist ~/.config/sshcnfgr/config.generated
-- Private Keys werden nicht gespeichert, nur Pfade und Metadaten
-
-## Entwicklung unter Linux
-
-Fuer Developer, die das Projekt erweitern wollen:
-
-```bash
-uv sync --extra dev
-uv run sshcnfgr --help
-```
-
-Nutzliche Befehle:
-
-```bash
+# Linting & Tests (inkl. Textual Pilot & Qt6 Offscreen)
 uv run ruff check .
-uv run pytest
+QT_QPA_PLATFORM=offscreen uv run pytest -v
 ```
 
-Packaging/Release lokal pruefen:
+### Paket bauen & auf PyPI veröffentlichen
 
 ```bash
-uv run -m build
-uv run -m twine check dist/*
+uv build
+uv run twine check dist/*
+uv publish
 ```
 
-## License
+Weitere Dokumente: [CHANGELOG.md](CHANGELOG.md), [SECURITY.md](SECURITY.md), [CONTRIBUTING.md](CONTRIBUTING.md), [LICENSE](LICENSE) (MIT).
 
-MIT, siehe LICENCE.
+---
 
-## Release Notizen (PyPI)
+## English Summary
 
-Fuer Vorab-Releases (Alpha/Beta) wird PEP 440 genutzt:
+**SSHCnfgr** is a cross-platform (Linux, macOS, Windows) manager for OpenSSH host configurations backed by a **single TOML file** (`~/.ssh/sshcnfgr.toml`, `0600` permissions on POSIX) located right next to `~/.ssh/config`.
 
-- Alpha: 0.1.0a1, 0.1.0a2, ...
-- Beta: 0.1.0b1, 0.1.0b2, ...
-- Stable: 0.1.0
+### Key Features
+- **Single source of truth:** Manage hosts, groups, identity profiles, and global defaults in `~/.ssh/sshcnfgr.toml` and generate clean OpenSSH configs (`~/.ssh/config.generated`) containing only enabled hosts.
+- **Duplicate detection & interactive merge:** Finds hosts pointing to the same effective `(HostName, Port, User)` target, highlights field conflicts, merges non-conflicting attributes, and lets you disable or delete duplicates safely.
+- **Three interfaces:** Interactive **Textual TUI** (default), optional **Qt6 desktop GUI** (`PySide6-Essentials`, Wayland/X11/macOS/Windows), and **Click CLI**.
+- **Safe by design:** Never reads or stores private SSH key contents; writes atomically with `0600` permissions and creates timestamped backups before overwriting.
 
-Typischer Ablauf:
-
-1. Version in pyproject.toml anheben
-2. Pakete bauen mit uv run -m build
-3. Upload mit uv run -m twine upload dist/*
-
-## Wichtige Dateien
-
-- `~/.config/sshcnfgr/hosts.toml` Datenbank
-- `~/.config/sshcnfgr/config.generated` generierte OpenSSH-Config
-- `~/.config/sshcnfgr/sshcnfgr.log` Logdatei
-
-## CLI Beispiele
-
+### Quickstart
 ```bash
-# Vorhandene SSH-Config importieren
-uv run sshcnfgr import --source ~/.ssh/config
+# Run directly with uvx (during 0.1.0b1 beta, pass --prerelease=allow)
+uvx --prerelease=allow sshcnfgr
+uvx --prerelease=allow --from "sshcnfgr[qt]" sshcnfgr gui
 
-# SSH-Config aus TOML generieren
-uv run sshcnfgr generate --output ~/.config/sshcnfgr/config.generated
+# Or install globally as a tool
+uv tool install --prerelease=allow sshcnfgr
+uv tool install --prerelease=allow "sshcnfgr[qt]"
 
-# Identities aus ~/.ssh erfassen
-uv run sshcnfgr identities scan
-
-# Bekannte Identities anzeigen
-uv run sshcnfgr identities list
-
-# Gruppen-Default-Identity setzen
-uv run sshcnfgr groups set-identity prod id_ed25519
-
-# TUI starten
-uv run sshcnfgr tui
+# Import existing OpenSSH config & generate
+sshcnfgr import --source ~/.ssh/config
+sshcnfgr generate
 ```
 
-## TUI Lern-Hinweise
-
-- Die Hostliste links wird aus der TOML geladen.
-- Die Identity-Liste zeigt verwaltete Schluesselprofile.
-- "Scan ~/.ssh" liest lokale Key-Dateien mit .pub-Pendant ein.
-- "Use Selected" uebernimmt die gewaehlte Identity ins Host-Formular.
-- Theme umschalten: Ctrl+T
-- Gewaehltes Theme wird dauerhaft gespeichert in ~/.config/sshcnfgr/app.toml
-- Mit einem Klick auf einen Host werden Felder rechts befuellt.
-- Speichern schreibt nur die TOML-Datenbank.
-- Generate erstellt die SSH-Ausgabedatei aus allen aktiven Hosts.
-
-## TOML Features (Basis)
-
-`hosts.toml` ist die Source of Truth. Aktuell unterstuetzt sie:
-
-- `groups`: Definierte Host-Gruppen (Name + optionale Beschreibung)
-- `identities`: Definierte Identity-Profile (Name, IdentityFile, Quelle)
-- `hosts`: Hosteintraege mit Feldern wie name, host_name, user, port, identity_file
-- `enabled`: Aktive/inaktive Hosts
-- `groups` pro Host: Mehrfachzuordnung via Liste
-- `identity` pro Host: Referenz auf ein Identity-Profil
-- `identity` pro Gruppe: Gruppen-Default-Identity
-- `extra_options`: Freie SSH-Direktiven als Key/Value
-
-Beispiel:
-
-```toml
-[[groups]]
-name = "prod"
-description = "Produktivsysteme"
-identity = "id_ed25519"
-
-[[groups]]
-name = "lab"
-
-[[hosts]]
-id = "a8f01f2e-5d3f-4f9f-a6aa-222d5ed42f30"
-name = "web-prod"
-enabled = true
-host_name = "10.0.0.12"
-user = "ubuntu"
-port = 22
-identity = "id_ed25519"
-groups = ["prod"]
-tags = ["k8s"]
-
-[[identities]]
-name = "id_ed25519"
-identity_file = "/home/thomas/.ssh/id_ed25519"
-source = "local-ssh"
-public_key_file = "/home/thomas/.ssh/id_ed25519.pub"
-public_key_preview = "ssh-ed25519 thomas@workstation"
-enabled = true
-
-[hosts.extra_options]
-ServerAliveInterval = "30"
-StrictHostKeyChecking = "accept-new"
-```
+Licensed under the [MIT License](LICENSE). See [SECURITY.md](SECURITY.md) for security reporting and [CONTRIBUTING.md](CONTRIBUTING.md) for development details.

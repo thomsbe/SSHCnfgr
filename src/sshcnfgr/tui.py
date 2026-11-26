@@ -4,13 +4,19 @@ import copy
 
 from rich.text import Text
 from textual.app import App, ComposeResult
-from textual.containers import Horizontal, Vertical
+from textual.containers import Horizontal, Vertical, VerticalScroll
 from textual.widgets import Button, Checkbox, DataTable, Footer, Header, Input, Label, Static
 
+from .dedup_screen import DuplicateReviewScreen
 from .generator import write_generated_config
 from .identities import discover_ssh_identities, merge_discovered_identities
 from .model import HostDatabase, HostEntry
-from .settings import load_ui_theme, save_ui_theme
+from .settings import (
+    DEFAULT_DARK_THEME,
+    DEFAULT_LIGHT_THEME,
+    load_ui_theme_name,
+    save_ui_theme_name,
+)
 from .store import load_database, save_database
 
 
@@ -31,6 +37,7 @@ class SSHCnfgrApp(App[None]):
         ("ctrl+g", "generate", "Generieren"),
         ("ctrl+n", "new_host", "Neu"),
         ("ctrl+d", "delete_host", "Loeschen"),
+        ("ctrl+u", "open_dedup", "Dubletten"),
         ("ctrl+t", "toggle_theme", "Thema"),
         ("q", "quit", "Beenden"),
     ]
@@ -59,13 +66,14 @@ class SSHCnfgrApp(App[None]):
                     yield Button("Neu", id="btn_new", variant="primary")
                     yield Button("Loeschen", id="btn_delete", variant="error")
                     yield Button("Toggle Aktiv", id="btn_toggle")
+                    yield Button("Dubletten", id="btn_dedup", variant="warning")
                 yield Label("Identities")
                 yield DataTable(id="identities_table", cursor_type="row")
                 with Horizontal(id="identity_actions"):
                     yield Button("Scan ~/.ssh", id="btn_scan_identities")
                     yield Button("Use Selected", id="btn_use_identity")
                     yield Button("Toggle Enabled", id="btn_toggle_identity")
-            with Vertical(id="right"):
+            with VerticalScroll(id="right"):
                 yield Label("Host Details")
                 yield Input(placeholder="Alias (Host)", id="name")
                 yield Input(placeholder="HostName", id="host_name")
@@ -90,8 +98,8 @@ class SSHCnfgrApp(App[None]):
 
         Hier laden wir Daten aus der TOML-Datei und initialisieren die Tabelle.
         """
-        # Dark/Light wird aus app.toml gelesen und auf die App angewandt.
-        self.dark = load_ui_theme()
+        # Gespeichertes Textual-Theme aus app.toml laden und auf die App anwenden.
+        self.theme = load_ui_theme_name()
 
         self.db = load_database()
         hosts_table = self.query_one("#hosts_table", DataTable)
@@ -100,7 +108,7 @@ class SSHCnfgrApp(App[None]):
         identities_table.add_columns("Name", "IdentityFile", "Public", "Source", "Enabled")
         self._refresh_table()
         self._refresh_identities_table()
-        self._set_status(f"Bereit | Theme: {'Dunkel' if self.dark else 'Hell'}")
+        self._set_status(f"Bereit | Theme: {self.theme}")
 
     def _set_status(self, message: str) -> None:
         """Schreibt eine kurze Rueckmeldung in die Statuszeile."""
@@ -209,6 +217,8 @@ class SSHCnfgrApp(App[None]):
                 host.port = int(port_raw)
             except ValueError:
                 errors.append(f"port ist keine Zahl: {port_raw}")
+        else:
+            host.port = None
 
         host.identity = self.query_one("#identity", Input).value.strip() or None
         host.identity_file = self.query_one("#identity_file", Input).value.strip() or None
@@ -255,8 +265,12 @@ class SSHCnfgrApp(App[None]):
                 self._set_status("Kein Host ausgewaehlt")
                 return
             host.enabled = not host.enabled
+            self.query_one("#enabled", Checkbox).value = host.enabled
+            save_database(self.db)
             self._refresh_table()
             self._set_status(f"Host {host.name} aktiv={host.enabled}")
+        elif event.button.id == "btn_dedup":
+            self.action_open_dedup()
         elif event.button.id == "btn_save":
             self.action_save()
         elif event.button.id == "btn_generate":
@@ -291,7 +305,7 @@ class SSHCnfgrApp(App[None]):
             return
 
         self.db.hosts = [h for h in self.db.hosts if h.id != host.id]
-        self.selected_host_id = None
+        self.action_new_host()
         self._refresh_table()
         save_database(self.db)
         self._set_status(f"Host geloescht: {host.name}")
@@ -329,28 +343,68 @@ class SSHCnfgrApp(App[None]):
         self._refresh_identities_table()
         self._set_status(f"Gespeichert: {candidate.name}")
 
+    def action_open_dedup(self) -> None:
+        """Oeffnet die Dubletten-Ansicht zum interaktiven Zusammenfuehren."""
+        self.push_screen(DuplicateReviewScreen(self.db), self._on_dedup_closed)
+
+    def _on_dedup_closed(self, updated_db: HostDatabase | None) -> None:
+        """Uebernimmt Aenderungen aus der Dubletten-Ansicht in die Hauptansicht."""
+        if updated_db is None:
+            return
+
+        self.db = updated_db
+        selected = self._get_selected_host()
+        if selected is None:
+            self.action_new_host()
+        else:
+            self._load_selected_into_form(selected)
+
+        self._refresh_table()
+        self._refresh_identities_table()
+        self._set_status("Dubletten-Aenderungen uebernommen")
+
     def action_generate(self) -> None:
         """Erzeugt aus der aktuellen DB die OpenSSH-Ausgabedatei."""
-        target = write_generated_config(self.db)
-        self._set_status(f"Generiert: {target}")
-
-    def action_toggle_theme(self) -> None:
-        """Schaltet zwischen Hell/Dunkel und speichert die Auswahl dauerhaft."""
-        self.dark = not self.dark
-        save_ui_theme(self.dark)
-        self._set_status(f"Theme gespeichert: {'Dunkel' if self.dark else 'Hell'}")
-
-    def action_scan_identities(self) -> None:
-        """Liest Keys aus ~/.ssh ein und merged sie in die Datenbank."""
-        discovered = discover_ssh_identities()
-        created, updated = merge_discovered_identities(self.db, discovered)
-
         db_errors = self.db.validate()
         if db_errors:
             self._set_status("; ".join(db_errors))
             return
 
+        try:
+            target = write_generated_config(self.db)
+        except OSError as exc:
+            self._set_status(f"Fehler beim Generieren: {exc}")
+            return
+        self._set_status(f"Generiert: {target}")
+
+    def action_toggle_theme(self) -> None:
+        """Schaltet zwischen Hell/Dunkel und speichert die Auswahl dauerhaft."""
+        self.theme = (
+            DEFAULT_LIGHT_THEME
+            if self.theme != DEFAULT_LIGHT_THEME
+            else DEFAULT_DARK_THEME
+        )
+        self.db.ui = {
+            "theme": self.theme,
+            "dark": self.theme != DEFAULT_LIGHT_THEME,
+        }
+        save_ui_theme_name(self.theme)
+        self._set_status(f"Theme gespeichert: {self.theme}")
+
+    def action_scan_identities(self) -> None:
+        """Liest Keys aus ~/.ssh ein und merged sie in die Datenbank."""
+        discovered = discover_ssh_identities()
+        candidate_db = copy.deepcopy(self.db)
+        created, updated = merge_discovered_identities(candidate_db, discovered)
+
+        db_errors = candidate_db.validate()
+        if db_errors:
+            self._set_status("; ".join(db_errors))
+            return
+
+        self.db = candidate_db
         save_database(self.db)
+        self._refresh_table()
         self._refresh_identities_table()
         self._set_status(
             f"Identity-Scan: gefunden={len(discovered)} neu={created} aktualisiert={updated}"
@@ -377,6 +431,7 @@ class SSHCnfgrApp(App[None]):
 
         identity.enabled = not identity.enabled
         save_database(self.db)
+        self._refresh_table()
         self._refresh_identities_table()
         self._set_status(f"Identity {identity.name} enabled={identity.enabled}")
 
@@ -391,20 +446,23 @@ class SSHCnfgrApp(App[None]):
             self._set_status("Bitte Group Name eintragen")
             return
 
-        self.db.ensure_groups([group_name])
-        group = self.db.get_group_by_name(group_name)
+        candidate_db = copy.deepcopy(self.db)
+        candidate_db.ensure_groups([group_name])
+        group = candidate_db.get_group_by_name(group_name)
         if group is None:
             self._set_status("Gruppe konnte nicht erstellt werden")
             return
 
         group.identity = self.selected_identity_name
 
-        db_errors = self.db.validate()
+        db_errors = candidate_db.validate()
         if db_errors:
             self._set_status("; ".join(db_errors))
             return
 
+        self.db = candidate_db
         save_database(self.db)
+        self._refresh_table()
         self._set_status(f"Group {group.name} -> Identity {self.selected_identity_name}")
 
 

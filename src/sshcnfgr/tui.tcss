@@ -37,3 +37,69 @@ Input {
   border: round $success;
   color: $text;
 }
+
+#dedup_toolbar {
+  height: auto;
+  padding: 0 1;
+  align-vertical: middle;
+}
+
+#dedup_title {
+  width: 1fr;
+  text-style: bold;
+}
+
+#dedup_body {
+  height: 1fr;
+}
+
+#dedup_left {
+  width: 40%;
+  padding: 1;
+  border: round $primary;
+}
+
+#dedup_right {
+  width: 60%;
+  padding: 1;
+  border: round $accent;
+}
+
+#dedup_groups_table {
+  height: 1fr;
+}
+
+#dedup_members_table {
+  height: 8;
+  margin-bottom: 1;
+}
+
+#dedup_conflicts_container {
+  height: auto;
+  margin-bottom: 1;
+}
+
+.dedup-hint {
+  color: $text-muted;
+  margin: 1 0;
+}
+
+#dedup_preview {
+  margin-top: 1;
+  padding: 1;
+  border: round $primary;
+  color: $text;
+}
+
+#dedup_left_actions,
+#dedup_merge_actions {
+  height: auto;
+  margin-top: 1;
+}
+
+#dedup_status {
+  margin-top: 1;
+  padding: 1;
+  border: round $success;
+  color: $text;
+}

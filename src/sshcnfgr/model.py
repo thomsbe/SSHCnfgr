@@ -4,6 +4,17 @@ from dataclasses import dataclass, field
 from uuid import uuid4
 
 
+def get_option_ci(options: dict[str, str], key: str) -> str | None:
+    """Liest eine OpenSSH-Direktive case-insensitive aus einem Options-Dict."""
+    if key in options:
+        return options[key]
+    key_lower = key.lower()
+    for existing_key, value in options.items():
+        if existing_key.lower() == key_lower:
+            return value
+    return None
+
+
 @dataclass(slots=True)
 class HostGroup:
     name: str
@@ -82,6 +93,7 @@ class HostDatabase:
     identities: list[IdentityProfile] = field(default_factory=list)
     global_options: dict[str, str] = field(default_factory=dict)
     hosts: list[HostEntry] = field(default_factory=list)
+    ui: dict[str, str | bool] = field(default_factory=dict)
 
     def validate(self) -> list[str]:
         errors: list[str] = []
@@ -176,21 +188,30 @@ class HostDatabase:
             if identity and identity.enabled:
                 return identity.identity_file
 
-        global_identity_file = self.global_options.get("IdentityFile")
+        global_identity_file = get_option_ci(self.global_options, "IdentityFile")
         if global_identity_file:
             return global_identity_file
 
         return None
 
     def resolve_identity_agent(self, host: HostEntry) -> str | None:
-        if "IdentityAgent" in host.extra_options:
-            return host.extra_options["IdentityAgent"]
-        return self.global_options.get("IdentityAgent")
+        host_agent = get_option_ci(host.extra_options, "IdentityAgent")
+        if host_agent is not None:
+            return host_agent
+        return get_option_ci(self.global_options, "IdentityAgent")
+
+    def resolve_user(self, host: HostEntry) -> str | None:
+        if host.user:
+            return host.user
+        global_user = get_option_ci(self.global_options, "User")
+        if global_user:
+            return global_user
+        return None
 
     def resolve_port(self, host: HostEntry) -> int:
         if host.port is not None:
             return host.port
-        global_port = self.global_options.get("Port")
+        global_port = get_option_ci(self.global_options, "Port")
         if global_port:
             try:
                 return int(global_port)

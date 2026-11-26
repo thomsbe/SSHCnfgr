@@ -1,10 +1,13 @@
 from __future__ import annotations
 
+import re
 from pathlib import Path
 
 from loguru import logger
 
 from .model import HostDatabase, HostEntry
+
+DIRECTIVE_SPLIT_RE = re.compile(r"(?:[ \t]*=[ \t]*|[ \t]+)")
 
 KNOWN_DIRECTIVES = {
     "hostname": "host_name",
@@ -55,12 +58,25 @@ def import_ssh_config(path: Path) -> tuple[HostDatabase, ImportReport]:
         if not line or line.startswith("#"):
             continue
 
-        if " " not in line and "\t" not in line:
+        parts = DIRECTIVE_SPLIT_RE.split(line, maxsplit=1)
+        if len(parts) != 2 or not parts[0] or not parts[1]:
             report.warnings.append(f"Zeile {line_number}: kann nicht geparst werden: {raw_line}")
             continue
 
-        key, value = line.split(maxsplit=1)
+        key, value = parts[0], parts[1].strip()
         key_lower = key.lower()
+
+        if key_lower == "match":
+            # Match-Bloecke werden noch nicht modelliert; sie muessen aber den vorherigen
+            # Host-Block beenden, damit ihre Direktiven nicht in andere Hosts leaken.
+            current_hosts = []
+            in_host_wildcard = False
+            in_skipped_host = True
+            seen_host_block = True
+            report.warnings.append(
+                f"Zeile {line_number}: Match-Block '{value}' wird aktuell uebersprungen"
+            )
+            continue
 
         if key_lower == "host":
             names = [token for token in value.split() if token]

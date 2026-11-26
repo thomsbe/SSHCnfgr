@@ -80,7 +80,6 @@ def merge_discovered_identities(
             existing.source = profile.source
             existing.public_key_file = profile.public_key_file
             existing.public_key_preview = profile.public_key_preview
-            existing.enabled = profile.enabled
             updated += 1
             continue
 

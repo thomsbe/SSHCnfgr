@@ -5,6 +5,7 @@ from pathlib import Path
 import click
 from loguru import logger
 
+from . import __version__
 from .generator import write_generated_config
 from .identities import discover_ssh_identities, merge_discovered_identities
 from .importer import import_ssh_config
@@ -13,10 +14,28 @@ from .paths import DB_PATH, GENERATED_CONFIG_PATH
 from .store import load_database, save_database
 
 
-@click.group(help="SSHCnfgr: SSH-Hosts per TOML mit TUI und CLI verwalten")
+@click.group(
+    invoke_without_command=True,
+    help="SSHCnfgr: SSH-Hosts per TOML (~/.ssh/sshcnfgr.toml) mit TUI, GUI und CLI verwalten",
+)
+@click.version_option(__version__, prog_name="sshcnfgr")
 @click.option("--verbose", is_flag=True, help="Debug-Logging aktivieren")
-def cli(verbose: bool) -> None:
-    configure_logging(verbose=verbose)
+@click.option(
+    "--log-file",
+    type=click.Path(path_type=Path, dir_okay=False, file_okay=True),
+    default=None,
+    help="Optionaler Pfad fuer eine Logdatei (Standard: keine Logdatei)",
+)
+@click.pass_context
+def cli(ctx: click.Context, verbose: bool, log_file: Path | None) -> None:
+    launching_tui = ctx.invoked_subcommand in (None, "tui")
+    # Im TUI-Modus kein stderr-Logging aktivieren, damit das Terminal-Layout sauber bleibt.
+    configure_logging(verbose=verbose, console=not launching_tui, log_file=log_file)
+    if ctx.invoked_subcommand is None:
+        from .tui import run_tui
+
+        logger.info("TUI wird direkt gestartet")
+        run_tui()
 
 
 @cli.command("tui", help="Starte die Textual TUI")
@@ -26,6 +45,22 @@ def tui_command() -> None:
 
     logger.info("TUI wird gestartet")
     run_tui()
+
+
+@cli.command("gui", help="Starte die optionale Qt6 Desktop-GUI (Wayland/X11)")
+def gui_command() -> None:
+    # Lazy import, damit PySide6 nur bei installiertem [qt]-Extra geladen wird.
+    try:
+        import PySide6  # noqa: F401
+
+        from .gui import run_gui
+    except ImportError as exc:
+        raise click.ClickException(
+            "Qt6-GUI benoetigt PySide6-Essentials. Installiere mit: uv sync --extra qt"
+        ) from exc
+
+    logger.info("Qt6-GUI wird gestartet")
+    run_gui()
 
 
 @cli.command("import", help="Importiere eine bestehende SSH-Config in die TOML-Datenbank")
@@ -60,7 +95,7 @@ def import_command(source: Path) -> None:
     show_default=True,
 )
 def generate_command(output: Path) -> None:
-    db = load_database(DB_PATH)
+    db = load_database()
     errors = db.validate()
     if errors:
         for err in errors:
@@ -85,7 +120,7 @@ def identities_group() -> None:
     show_default=True,
 )
 def identities_scan_command(ssh_dir: Path) -> None:
-    db = load_database(DB_PATH)
+    db = load_database()
     discovered = discover_ssh_identities(ssh_dir)
     created, updated = merge_discovered_identities(db, discovered)
     save_database(db, DB_PATH)
@@ -100,7 +135,7 @@ def identities_scan_command(ssh_dir: Path) -> None:
 
 @identities_group.command("list", help="Liste bekannte Identities")
 def identities_list_command() -> None:
-    db = load_database(DB_PATH)
+    db = load_database()
     if not db.identities:
         click.echo("Keine Identities vorhanden")
         return
@@ -121,7 +156,7 @@ def groups_group() -> None:
 @click.argument("group_name")
 @click.argument("identity_name")
 def groups_set_identity_command(group_name: str, identity_name: str) -> None:
-    db = load_database(DB_PATH)
+    db = load_database()
 
     identity = db.get_identity_by_name(identity_name)
     if identity is None:

@@ -5,6 +5,14 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html) (with PEP 440 pre-release tags).
 
+## [0.2.0b1] - 2026-11-26
+
+### Added
+- **Linux AppImage (`x86_64`) with Gear Lever auto-updates:** Automated GitHub Actions build workflow (`appimage.yml` on `ubuntu-22.04`) bundling Python, `sshcnfgr`, and `PySide6-Essentials` via PyInstaller and `appimagetool`.
+- **Embedded `gh-releases-zsync` update metadata & `.zsync` artifacts:** Enables automatic delta updates in Gear Lever and AppImageUpdate directly from GitHub Releases.
+- **Custom vector SVG icon & desktop metadata:** Added `src/sshcnfgr/assets/sshcnfgr.svg`, Freedesktop `.desktop` entry (`de.tbaer.sshcnfgr`), AppStream metainfo, and native Wayland/X11 window icon integration.
+- **Smart AppImage entry point:** Launching the AppImage without arguments opens the Qt6 desktop GUI directly; passing arguments delegates to the standard CLI/TUI.
+
 ## [0.1.0b1] - 2026-11-26
 
 ### Added

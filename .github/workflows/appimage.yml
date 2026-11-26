@@ -1,0 +1,80 @@
+name: Build Linux AppImage
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      update_tag:
+        description: "Update channel tag embedded in gh-releases-zsync (default: latest)"
+        required: false
+        default: "latest"
+
+permissions:
+  contents: write
+
+jobs:
+  build-appimage:
+    name: Build x86_64 AppImage (ubuntu-22.04)
+    runs-on: ubuntu-22.04
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install AppImage & Qt6 build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            zsync \
+            librsvg2-bin \
+            libxcb-cursor0 \
+            libegl1 \
+            libgl1 \
+            libxkbcommon-x11-0
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+
+      - name: Set up Python 3.12
+        run: uv python install 3.12
+
+      - name: Sync dependencies with Qt extra
+        run: uv sync --python 3.12 --extra qt
+
+      - name: Build AppImage and zsync metadata
+        env:
+          ARCH: x86_64
+          REPO_OWNER: ${{ github.repository_owner }}
+          REPO_NAME: ${{ github.event.repository.name }}
+          UPDATE_TAG: ${{ inputs.update_tag || 'latest' }}
+          UV_PYTHON: "3.12"
+        run: ./packaging/appimage/build_appimage.sh
+
+      - name: Smoke test AppImage CLI
+        run: |
+          APPIMAGE="$(ls dist/SSHCnfgr-*-x86_64.AppImage | head -n 1)"
+          APPIMAGE_EXTRACT_AND_RUN=1 "$APPIMAGE" --version
+          APPIMAGE_EXTRACT_AND_RUN=1 "$APPIMAGE" --help
+
+      - name: Upload AppImage artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: sshcnfgr-appimage-x86_64
+          path: |
+            dist/SSHCnfgr-*-x86_64.AppImage
+            dist/SSHCnfgr-*-x86_64.AppImage.zsync
+            dist/SSHCnfgr-*-x86_64.SHA256SUMS.txt
+
+      - name: Attach AppImage and zsync to GitHub Release
+        if: github.event_name == 'release'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release upload "${{ github.event.release.tag_name }}" \
+            dist/SSHCnfgr-*-x86_64.AppImage \
+            dist/SSHCnfgr-*-x86_64.AppImage.zsync \
+            dist/SSHCnfgr-*-x86_64.SHA256SUMS.txt \
+            --clobber

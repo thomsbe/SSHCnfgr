@@ -1,0 +1,11 @@
+[Desktop Entry]
+Type=Application
+Name=SSHCnfgr
+GenericName=SSH Config Manager
+Comment=Manage OpenSSH hosts, groups, and identities from a single TOML file
+Exec=sshcnfgr
+Icon=de.tbaer.sshcnfgr
+Categories=Utility;Network;System;
+Keywords=ssh;openssh;config;hosts;terminal;toml;
+Terminal=false
+StartupWMClass=SSHCnfgr

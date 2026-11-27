@@ -67,6 +67,36 @@ class ModelAndIdentitiesTests(unittest.TestCase):
         self.assertEqual(db.resolve_user(web), "deploy")
         self.assertEqual(db.resolve_port(web), 22)
 
+    def test_bulk_host_operations(self) -> None:
+        db = HostDatabase(
+            groups=[HostGroup(name="prod"), HostGroup(name="lab")],
+            identities=[IdentityProfile(name="id_prod", identity_file="~/.ssh/id_prod")],
+            hosts=[
+                HostEntry(id="h1", name="a", host_name="10.0.0.1", groups=["lab"], enabled=True),
+                HostEntry(id="h2", name="b", host_name="10.0.0.2", groups=[], enabled=True),
+                HostEntry(id="h3", name="c", host_name="10.0.0.3", groups=["lab"], enabled=False),
+            ],
+        )
+
+        self.assertEqual(db.bulk_add_group({"h1", "h2"}, "prod", as_primary=True), 2)
+        self.assertEqual(db.get_by_id("h1").groups, ["prod", "lab"])  # type: ignore[union-attr]
+        self.assertEqual(db.get_by_id("h2").groups, ["prod"])  # type: ignore[union-attr]
+
+        self.assertEqual(db.bulk_set_enabled({"h1", "h2", "h3"}, False), 2)
+        self.assertTrue(all(not h.enabled for h in db.hosts))
+
+        self.assertEqual(db.bulk_set_enabled({"h1", "h3"}, True), 2)
+        self.assertTrue(db.get_by_id("h1").enabled)  # type: ignore[union-attr]
+        self.assertFalse(db.get_by_id("h2").enabled)  # type: ignore[union-attr]
+
+        self.assertEqual(db.bulk_set_identity({"h1", "h2"}, "id_prod"), 2)
+        self.assertEqual(db.get_by_id("h1").identity, "id_prod")  # type: ignore[union-attr]
+
+        self.assertEqual(db.bulk_remove_group({"h1", "h2"}, "prod"), 2)
+        self.assertEqual(db.get_by_id("h1").groups, ["lab"])  # type: ignore[union-attr]
+        self.assertEqual(db.bulk_delete_hosts({"h2", "h3"}), 2)
+        self.assertEqual([h.id for h in db.hosts], ["h1"])
+
     def test_merge_discovered_identities_preserves_disabled_flag(self) -> None:
         db = HostDatabase(
             identities=[

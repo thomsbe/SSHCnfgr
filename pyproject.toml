@@ -1,6 +1,6 @@
 [project]
 name = "sshcnfgr"
-version = "0.2.0b2"
+version = "0.2.0b3"
 description = "TUI, optional Qt6 GUI, and CLI to manage OpenSSH host configs from a single TOML file"
 readme = "README.md"
 requires-python = ">=3.12"

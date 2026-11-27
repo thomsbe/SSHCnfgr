@@ -214,6 +214,73 @@ class QtGuiTests(unittest.TestCase):
                 finally:
                     window.close()
 
+    def test_multi_select_bulk_actions(self) -> None:
+        from PySide6.QtCore import QItemSelectionModel
+
+        from sshcnfgr.gui.main_window import SSHCnfgrWindow
+
+        db = HostDatabase(
+            groups=[HostGroup(name="prod"), HostGroup(name="lab")],
+            hosts=[
+                HostEntry(id="h1", name="srv-1", host_name="10.0.0.1", enabled=True),
+                HostEntry(id="h2", name="srv-2", host_name="10.0.0.2", enabled=True),
+                HostEntry(id="h3", name="srv-3", host_name="10.0.0.3", enabled=True),
+            ],
+        )
+
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            db_path = Path(tmp_dir) / "sshcnfgr.toml"
+            save_database(db, db_path, backup=False)
+
+            def _save(updated_db: HostDatabase) -> None:
+                save_database(updated_db, db_path)
+
+            with patch("sshcnfgr.gui.main_window.save_database", side_effect=_save):
+                window = SSHCnfgrWindow(db=load_database(db_path))
+                try:
+                    # Zwei Zeilen (srv-1 und srv-2) gleichzeitig markieren.
+                    sel_model = window.hosts_table.selectionModel()
+                    flags = (
+                        QItemSelectionModel.SelectionFlag.Select
+                        | QItemSelectionModel.SelectionFlag.Rows
+                    )
+                    sel_model.select(window.hosts_table.model().index(0, 0), flags)
+                    sel_model.select(window.hosts_table.model().index(1, 0), flags)
+
+                    self.assertEqual(len(window.selected_host_ids()), 2)
+                    self.assertIn("2 Hosts markiert", window.lbl_bulk_selection.text())
+                    self.assertFalse(window.btn_host_save.isEnabled())
+
+                    # Beide markierten Hosts als 1. Gruppe 'prod' zuweisen.
+                    idx = window.bulk_group_combo.findData("prod")
+                    window.bulk_group_combo.setCurrentIndex(idx)
+                    window.action_bulk_add_group(as_primary=True)
+
+                    reloaded = load_database(db_path)
+                    self.assertEqual(reloaded.get_by_id("h1").groups, ["prod"])  # type: ignore[union-attr]
+                    self.assertEqual(reloaded.get_by_id("h2").groups, ["prod"])  # type: ignore[union-attr]
+                    self.assertEqual(reloaded.get_by_id("h3").groups, [])  # type: ignore[union-attr]
+
+                    # Beide deaktivieren, dann wieder aktivieren.
+                    window.action_bulk_set_enabled(False)
+                    reloaded = load_database(db_path)
+                    self.assertFalse(reloaded.get_by_id("h1").enabled)  # type: ignore[union-attr]
+                    self.assertFalse(reloaded.get_by_id("h2").enabled)  # type: ignore[union-attr]
+                    self.assertTrue(reloaded.get_by_id("h3").enabled)  # type: ignore[union-attr]
+
+                    window.action_bulk_set_enabled(True)
+                    reloaded = load_database(db_path)
+                    self.assertTrue(reloaded.get_by_id("h1").enabled)  # type: ignore[union-attr]
+                    self.assertTrue(reloaded.get_by_id("h2").enabled)  # type: ignore[union-attr]
+
+                    # Gruppe wieder per Sammel-Aktion entfernen.
+                    window.action_bulk_remove_group()
+                    reloaded = load_database(db_path)
+                    self.assertEqual(reloaded.get_by_id("h1").groups, [])  # type: ignore[union-attr]
+                    self.assertEqual(reloaded.get_by_id("h2").groups, [])  # type: ignore[union-attr]
+                finally:
+                    window.close()
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -315,3 +315,61 @@ class HostDatabase:
     def ensure_identity(self, profile: IdentityProfile) -> None:
         if self.get_identity_by_name(profile.name) is None:
             self.identities.append(profile)
+
+    def bulk_set_enabled(self, host_ids: set[str], enabled: bool) -> int:
+        """Aktiviert oder deaktiviert mehrere Hosts anhand ihrer IDs."""
+        changed = 0
+        for host in self.hosts:
+            if host.id in host_ids and host.enabled != enabled:
+                host.enabled = enabled
+                changed += 1
+        return changed
+
+    def bulk_add_group(
+        self, host_ids: set[str], group_name: str, *, as_primary: bool = False
+    ) -> int:
+        """Weist mehreren Hosts eine Gruppe zu (optional als erste/primaere Gruppe)."""
+        cleaned = group_name.strip()
+        if not cleaned:
+            return 0
+        self.ensure_groups([cleaned])
+        changed = 0
+        for host in self.hosts:
+            if host.id not in host_ids:
+                continue
+            if as_primary:
+                if host.groups and host.groups[0] == cleaned:
+                    continue
+                host.groups = [cleaned, *(g for g in host.groups if g != cleaned)]
+                changed += 1
+            elif cleaned not in host.groups:
+                host.groups.append(cleaned)
+                changed += 1
+        return changed
+
+    def bulk_remove_group(self, host_ids: set[str], group_name: str) -> int:
+        """Entfernt eine Gruppe von mehreren Hosts."""
+        cleaned = group_name.strip()
+        if not cleaned:
+            return 0
+        changed = 0
+        for host in self.hosts:
+            if host.id in host_ids and cleaned in host.groups:
+                host.groups = [g for g in host.groups if g != cleaned]
+                changed += 1
+        return changed
+
+    def bulk_set_identity(self, host_ids: set[str], identity_name: str | None) -> int:
+        """Weist mehreren Hosts ein Identity-Profil zu (oder leert es bei None)."""
+        changed = 0
+        for host in self.hosts:
+            if host.id in host_ids and host.identity != identity_name:
+                host.identity = identity_name
+                changed += 1
+        return changed
+
+    def bulk_delete_hosts(self, host_ids: set[str]) -> int:
+        """Loescht mehrere Hosts anhand ihrer IDs."""
+        before = len(self.hosts)
+        self.hosts = [h for h in self.hosts if h.id not in host_ids]
+        return before - len(self.hosts)

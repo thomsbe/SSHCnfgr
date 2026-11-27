@@ -5,6 +5,11 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html) (with PEP 440 pre-release tags).
 
+## [0.2.0b3] - 2026-11-26
+
+### Added
+- **Multi-select & bulk host actions (Qt6 GUI):** Select multiple hosts via `Ctrl+Click`, `Shift+Click`, or `Ctrl+A` (pairs great with live search filtering) and apply bulk actions from the new **Sammel-Aktionen** bar or right-click context menu: assign to group, set as primary (1st) group, remove from group, enable all, disable all, assign identity, or delete multiple hosts with confirmation.
+
 ## [0.2.0b2] - 2026-11-26
 
 ### Added

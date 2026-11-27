@@ -3,7 +3,7 @@ from __future__ import annotations
 import copy
 from pathlib import Path
 
-from PySide6.QtCore import Qt, Signal
+from PySide6.QtCore import QItemSelectionModel, QPoint, Qt, Signal
 from PySide6.QtGui import QAction, QColor, QDropEvent, QFont, QKeySequence
 from PySide6.QtWidgets import (
     QAbstractItemView,
@@ -17,6 +17,7 @@ from PySide6.QtWidgets import (
     QLabel,
     QLineEdit,
     QMainWindow,
+    QMenu,
     QMessageBox,
     QPlainTextEdit,
     QPushButton,
@@ -132,6 +133,7 @@ class SSHCnfgrWindow(QMainWindow):
 
         self.db: HostDatabase = db if db is not None else load_database()
         self.selected_host_id: str | None = None
+        self._selected_host_ids: set[str] = set()
         self.selected_group_name: str | None = None
         self.selected_identity_name: str | None = None
 
@@ -228,6 +230,10 @@ class SSHCnfgrWindow(QMainWindow):
             self.hosts_table,
             ["Alias", "HostName", "User", "Port", "Identity", "Gruppen", "Aktiv"],
         )
+        # Mehrfachauswahl (Ctrl+Klick, Shift+Klick, Ctrl+A) + Rechtsklick-Menue
+        self.hosts_table.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
+        self.hosts_table.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        self.hosts_table.customContextMenuRequested.connect(self._show_hosts_context_menu)
         self.hosts_table.itemSelectionChanged.connect(self._on_host_selection_changed)
         left_layout.addWidget(self.hosts_table, stretch=1)
 
@@ -251,6 +257,49 @@ class SSHCnfgrWindow(QMainWindow):
         list_btn_row.addStretch(1)
         list_btn_row.addWidget(self.btn_host_dedup)
         left_layout.addLayout(list_btn_row)
+
+        # Sammel-Aktionen fuer 1 oder mehrere markierte Hosts
+        bulk_box = QGroupBox("Sammel-Aktionen (Ctrl/Shift-Klick, Ctrl+A)", left_widget)
+        bulk_layout = QVBoxLayout(bulk_box)
+
+        self.lbl_bulk_selection = QLabel("Keine Auswahl", bulk_box)
+        bulk_layout.addWidget(self.lbl_bulk_selection)
+
+        bulk_group_row = QHBoxLayout()
+        self.bulk_group_combo = QComboBox(bulk_box)
+        self.btn_bulk_add_group = QPushButton("+ Gruppe", bulk_box)
+        self.btn_bulk_add_group.setToolTip("Markierte Hosts zur gewaehlten Gruppe hinzufuegen")
+        self.btn_bulk_add_group.clicked.connect(
+            lambda: self.action_bulk_add_group(as_primary=False)
+        )
+        self.btn_bulk_primary_group = QPushButton("Als 1. Gruppe", bulk_box)
+        self.btn_bulk_primary_group.setToolTip(
+            "Gewaehlte Gruppe als erste/primaere Gruppe setzen (bestimmt Sortierung in VS Code)"
+        )
+        self.btn_bulk_primary_group.clicked.connect(
+            lambda: self.action_bulk_add_group(as_primary=True)
+        )
+        self.btn_bulk_remove_group = QPushButton("- Gruppe", bulk_box)
+        self.btn_bulk_remove_group.setToolTip("Markierte Hosts aus der gewaehlten Gruppe entfernen")
+        self.btn_bulk_remove_group.clicked.connect(self.action_bulk_remove_group)
+
+        bulk_group_row.addWidget(self.bulk_group_combo, stretch=1)
+        bulk_group_row.addWidget(self.btn_bulk_add_group)
+        bulk_group_row.addWidget(self.btn_bulk_primary_group)
+        bulk_group_row.addWidget(self.btn_bulk_remove_group)
+        bulk_layout.addLayout(bulk_group_row)
+
+        bulk_state_row = QHBoxLayout()
+        self.btn_bulk_enable = QPushButton("Alle aktivieren", bulk_box)
+        self.btn_bulk_enable.clicked.connect(lambda: self.action_bulk_set_enabled(True))
+        self.btn_bulk_disable = QPushButton("Alle deaktivieren", bulk_box)
+        self.btn_bulk_disable.clicked.connect(lambda: self.action_bulk_set_enabled(False))
+        bulk_state_row.addWidget(self.btn_bulk_enable)
+        bulk_state_row.addWidget(self.btn_bulk_disable)
+        bulk_state_row.addStretch(1)
+        bulk_layout.addLayout(bulk_state_row)
+
+        left_layout.addWidget(bulk_box)
 
         # Rechte Seite: Scrollbares Detailformular + Extra-Optionen
         right_scroll = QScrollArea(splitter)
@@ -588,11 +637,71 @@ class SSHCnfgrWindow(QMainWindow):
 
     def _refresh_all(self) -> None:
         self._refresh_identity_combos()
+        self._refresh_bulk_group_combo()
         self._refresh_hosts_table()
         self._refresh_groups_table()
         self._refresh_identities_table()
         self._refresh_preview()
         self._update_dedup_badge()
+        self._update_bulk_controls()
+
+    def _refresh_bulk_group_combo(self) -> None:
+        combo = self.bulk_group_combo
+        previous = combo.currentData()
+        combo.blockSignals(True)
+        try:
+            combo.clear()
+            groups = self.db.ordered_groups()
+            if not groups:
+                combo.addItem("(keine Gruppen definiert)", None)
+            else:
+                for group in groups:
+                    combo.addItem(group.name, group.name)
+                if previous:
+                    idx = combo.findData(previous)
+                    if idx >= 0:
+                        combo.setCurrentIndex(idx)
+        finally:
+            combo.blockSignals(False)
+
+    def selected_host_ids(self) -> list[str]:
+        """Liefert die IDs aller aktuell in der Host-Tabelle markierten Zeilen."""
+        ids: list[str] = []
+        selection_model = self.hosts_table.selectionModel()
+        if selection_model is None:
+            return ids
+        for idx in selection_model.selectedRows(0):
+            item = self.hosts_table.item(idx.row(), 0)
+            if item is not None:
+                host_id = item.data(Qt.ItemDataRole.UserRole)
+                if host_id:
+                    ids.append(str(host_id))
+        return ids
+
+    def _update_bulk_controls(self) -> None:
+        count = len(self._selected_host_ids)
+        has_selection = count > 0
+        has_group = self.bulk_group_combo.currentData() is not None
+
+        if count == 0:
+            self.lbl_bulk_selection.setText("Keine Hosts markiert")
+        elif count == 1:
+            self.lbl_bulk_selection.setText("1 Host markiert")
+        else:
+            self.lbl_bulk_selection.setText(f"{count} Hosts markiert")
+
+        self.btn_bulk_enable.setEnabled(has_selection)
+        self.btn_bulk_disable.setEnabled(has_selection)
+        self.btn_bulk_add_group.setEnabled(has_selection and has_group)
+        self.btn_bulk_primary_group.setEnabled(has_selection and has_group)
+        self.btn_bulk_remove_group.setEnabled(has_selection and has_group)
+        self.btn_host_toggle.setEnabled(has_selection)
+        self.btn_host_delete.setEnabled(has_selection)
+
+        # Bei Mehrfachauswahl Einzelformular-Speichern deaktivieren, um Versehen zu vermeiden.
+        multi = count > 1
+        self.btn_host_save.setEnabled(not multi)
+        self.btn_host_reset.setEnabled(not multi)
 
     def _update_dedup_badge(self) -> None:
         dup_count = len(find_duplicate_groups(self.db, include_inactive=False))
@@ -656,10 +765,15 @@ class SSHCnfgrWindow(QMainWindow):
         table.blockSignals(True)
         try:
             table.setRowCount(len(hosts))
-            selected_row = -1
+            selected_rows: list[int] = []
+            target_ids = (
+                set(self._selected_host_ids)
+                if self._selected_host_ids
+                else ({self.selected_host_id} if self.selected_host_id else set())
+            )
             for row, host in enumerate(hosts):
-                if host.id == self.selected_host_id:
-                    selected_row = row
+                if host.id in target_ids:
+                    selected_rows.append(row)
 
                 eff_user = self.db.resolve_user(host)
                 user_muted = host.user is None and eff_user is not None
@@ -703,10 +817,19 @@ class SSHCnfgrWindow(QMainWindow):
                     _make_item("Ja" if host.enabled else "Nein", muted=not host.enabled),
                 )
 
-            if selected_row >= 0:
-                table.selectRow(selected_row)
+            selection_model = table.selectionModel()
+            if selection_model is not None and selected_rows:
+                flags = (
+                    QItemSelectionModel.SelectionFlag.Select
+                    | QItemSelectionModel.SelectionFlag.Rows
+                )
+                for row in selected_rows:
+                    selection_model.select(table.model().index(row, 0), flags)
         finally:
             table.blockSignals(False)
+
+        self._selected_host_ids = set(self.selected_host_ids())
+        self._update_bulk_controls()
 
     def _describe_identity(self, host: HostEntry) -> tuple[str, bool, str | None]:
         if host.identity_file:
@@ -781,21 +904,83 @@ class SSHCnfgrWindow(QMainWindow):
             self._refresh_preview()
 
     # ------------------------------------------------------------------
-    # Host-Formular & Aktionen
+    # Host-Formular & Sammel-Aktionen
     # ------------------------------------------------------------------
     def _on_host_selection_changed(self) -> None:
-        selected_rows = self.hosts_table.selectionModel().selectedRows()
-        if not selected_rows:
+        selected_ids = self.selected_host_ids()
+        self._selected_host_ids = set(selected_ids)
+        self._update_bulk_controls()
+
+        if len(selected_ids) == 1:
+            host = self.db.get_by_id(selected_ids[0])
+            if host is not None:
+                self.selected_host_id = host.id
+                self._load_host_into_form(host)
             return
-        item = self.hosts_table.item(selected_rows[0].row(), 0)
-        if item is None:
+
+        self.selected_host_id = None
+        if len(selected_ids) > 1:
+            self.lbl_host_effective.setText(
+                f"{len(selected_ids)} Hosts markiert — Sammel-Aktionen links oder Rechtsklick."
+            )
+
+    def _show_hosts_context_menu(self, pos: QPoint) -> None:
+        selected_ids = self.selected_host_ids()
+        if not selected_ids:
             return
-        host_id = item.data(Qt.ItemDataRole.UserRole)
-        host = self.db.get_by_id(str(host_id))
-        if host is None:
-            return
-        self.selected_host_id = host.id
-        self._load_host_into_form(host)
+        count = len(selected_ids)
+        menu = QMenu(self)
+
+        act_enable = menu.addAction(f"Aktivieren ({count})")
+        act_enable.triggered.connect(lambda: self.action_bulk_set_enabled(True))
+
+        act_disable = menu.addAction(f"Deaktivieren ({count})")
+        act_disable.triggered.connect(lambda: self.action_bulk_set_enabled(False))
+
+        menu.addSeparator()
+
+        groups = self.db.ordered_groups()
+        if groups:
+            add_menu = menu.addMenu("Zu Gruppe hinzufuegen")
+            primary_menu = menu.addMenu("Als 1. Gruppe setzen")
+            remove_menu = menu.addMenu("Aus Gruppe entfernen")
+            for group in groups:
+                g_name = group.name
+                a1 = add_menu.addAction(g_name)
+                a1.triggered.connect(
+                    lambda _checked=False, name=g_name: self.action_bulk_add_group(
+                        group_name=name, as_primary=False
+                    )
+                )
+                a2 = primary_menu.addAction(g_name)
+                a2.triggered.connect(
+                    lambda _checked=False, name=g_name: self.action_bulk_add_group(
+                        group_name=name, as_primary=True
+                    )
+                )
+                a3 = remove_menu.addAction(g_name)
+                a3.triggered.connect(
+                    lambda _checked=False, name=g_name: self.action_bulk_remove_group(
+                        group_name=name
+                    )
+                )
+
+        identities = self.db.sorted_identities()
+        id_menu = menu.addMenu("Identity zuweisen")
+        act_clear_id = id_menu.addAction("(keine)")
+        act_clear_id.triggered.connect(lambda: self.action_bulk_set_identity(None))
+        for identity in identities:
+            i_name = identity.name
+            ai = id_menu.addAction(i_name)
+            ai.triggered.connect(
+                lambda _checked=False, name=i_name: self.action_bulk_set_identity(name)
+            )
+
+        menu.addSeparator()
+        act_delete = menu.addAction(f"Loeschen ({count})…")
+        act_delete.triggered.connect(self.action_delete_host)
+
+        menu.exec(self.hosts_table.viewport().mapToGlobal(pos))
 
     def _load_host_into_form(self, host: HostEntry) -> None:
         self.in_host_name_alias.setText(host.name)
@@ -905,6 +1090,7 @@ class SSHCnfgrWindow(QMainWindow):
 
     def action_new_host(self) -> None:
         self.selected_host_id = None
+        self._selected_host_ids.clear()
         self.hosts_table.clearSelection()
         self.in_host_name_alias.clear()
         self.in_host_hostname.clear()
@@ -917,6 +1103,7 @@ class SSHCnfgrWindow(QMainWindow):
         self.in_host_enabled.setChecked(True)
         self.lbl_host_effective.setText("Neuer Host")
         self.extra_options_table.setRowCount(0)
+        self._update_bulk_controls()
         self.in_host_name_alias.setFocus()
         self._set_status("Neuer Host: Felder ausfuellen und speichern")
 
@@ -943,40 +1130,185 @@ class SSHCnfgrWindow(QMainWindow):
             return
 
         self.selected_host_id = candidate.id
+        self._selected_host_ids = {candidate.id}
         self._refresh_all()
         self._load_host_into_form(candidate)
         self._set_status(f"Host gespeichert: {candidate.name}")
 
     def action_toggle_host_enabled(self) -> None:
-        if not self.selected_host_id:
+        target_ids = set(self.selected_host_ids())
+        if not target_ids:
             self._set_status("Kein Host ausgewaehlt")
             return
 
         candidate_db = copy.deepcopy(self.db)
-        host = candidate_db.get_by_id(self.selected_host_id)
-        if host is None:
+        changed = 0
+        last_host: HostEntry | None = None
+        for host in candidate_db.hosts:
+            if host.id in target_ids:
+                host.enabled = not host.enabled
+                changed += 1
+                last_host = host
+
+        if not changed or not self._commit_db(candidate_db):
             return
-        host.enabled = not host.enabled
+
+        self._selected_host_ids = target_ids
+        self._refresh_all()
+        if len(target_ids) == 1 and last_host is not None:
+            self._load_host_into_form(last_host)
+            self._set_status(f"Host '{last_host.name}' aktiv={last_host.enabled}")
+        else:
+            self._set_status(f"{changed} Host(s) umgeschaltet")
+
+    def action_bulk_set_enabled(self, enabled: bool) -> None:
+        target_ids = set(self.selected_host_ids())
+        if not target_ids:
+            self._set_status("Keine Hosts markiert")
+            return
+
+        candidate_db = copy.deepcopy(self.db)
+        changed = candidate_db.bulk_set_enabled(target_ids, enabled)
+        if changed == 0:
+            state = "aktiv" if enabled else "inaktiv"
+            self._set_status(f"Alle {len(target_ids)} markierten Hosts sind bereits {state}")
+            return
 
         if not self._commit_db(candidate_db):
             return
 
+        self._selected_host_ids = target_ids
         self._refresh_all()
-        self._load_host_into_form(host)
-        self._set_status(f"Host '{host.name}' aktiv={host.enabled}")
+        if len(target_ids) == 1:
+            host = self.db.get_by_id(next(iter(target_ids)))
+            if host is not None:
+                self._load_host_into_form(host)
+        verb = "aktiviert" if enabled else "deaktiviert"
+        self._set_status(f"{changed} Host(s) {verb}")
+
+    def action_bulk_add_group(
+        self,
+        *,
+        group_name: str | None = None,
+        as_primary: bool = False,
+    ) -> None:
+        target_ids = set(self.selected_host_ids())
+        if not target_ids:
+            self._set_status("Keine Hosts markiert")
+            return
+
+        chosen = group_name if group_name is not None else self.bulk_group_combo.currentData()
+        if not chosen:
+            self._set_status("Bitte zuerst im Gruppen-Tab eine Gruppe anlegen")
+            return
+        chosen_name = str(chosen)
+
+        candidate_db = copy.deepcopy(self.db)
+        changed = candidate_db.bulk_add_group(target_ids, chosen_name, as_primary=as_primary)
+        errors = candidate_db.validate()
+        if errors:
+            QMessageBox.warning(self, "Validierungsfehler", "\n".join(errors))
+            return
+
+        if changed == 0:
+            self._set_status(f"Markierte Hosts sind bereits in Gruppe '{chosen_name}'")
+            return
+
+        if not self._commit_db(candidate_db):
+            return
+
+        self._selected_host_ids = target_ids
+        self._refresh_all()
+        if len(target_ids) == 1:
+            host = self.db.get_by_id(next(iter(target_ids)))
+            if host is not None:
+                self._load_host_into_form(host)
+        detail = "als 1. Gruppe gesetzt" if as_primary else "zugewiesen"
+        self._set_status(f"{changed} Host(s): Gruppe '{chosen_name}' {detail}")
+
+    def action_bulk_remove_group(self, *, group_name: str | None = None) -> None:
+        target_ids = set(self.selected_host_ids())
+        if not target_ids:
+            self._set_status("Keine Hosts markiert")
+            return
+
+        chosen = group_name if group_name is not None else self.bulk_group_combo.currentData()
+        if not chosen:
+            self._set_status("Keine Gruppe ausgewaehlt")
+            return
+        chosen_name = str(chosen)
+
+        candidate_db = copy.deepcopy(self.db)
+        changed = candidate_db.bulk_remove_group(target_ids, chosen_name)
+        if changed == 0:
+            self._set_status(f"Keiner der markierten Hosts war in Gruppe '{chosen_name}'")
+            return
+
+        if not self._commit_db(candidate_db):
+            return
+
+        self._selected_host_ids = target_ids
+        self._refresh_all()
+        if len(target_ids) == 1:
+            host = self.db.get_by_id(next(iter(target_ids)))
+            if host is not None:
+                self._load_host_into_form(host)
+        self._set_status(f"{changed} Host(s) aus Gruppe '{chosen_name}' entfernt")
+
+    def action_bulk_set_identity(self, identity_name: str | None) -> None:
+        target_ids = set(self.selected_host_ids())
+        if not target_ids:
+            self._set_status("Keine Hosts markiert")
+            return
+
+        candidate_db = copy.deepcopy(self.db)
+        changed = candidate_db.bulk_set_identity(target_ids, identity_name)
+        errors = candidate_db.validate()
+        if errors:
+            QMessageBox.warning(self, "Validierungsfehler", "\n".join(errors))
+            return
+
+        if changed == 0:
+            self._set_status("Keine Aenderung noetig")
+            return
+
+        if not self._commit_db(candidate_db):
+            return
+
+        self._selected_host_ids = target_ids
+        self._refresh_all()
+        if len(target_ids) == 1:
+            host = self.db.get_by_id(next(iter(target_ids)))
+            if host is not None:
+                self._load_host_into_form(host)
+        label = identity_name or "(keine)"
+        self._set_status(f"{changed} Host(s): Identity '{label}' gesetzt")
 
     def action_delete_host(self) -> None:
-        if not self.selected_host_id:
+        target_ids = set(self.selected_host_ids())
+        if not target_ids:
             self._set_status("Kein Host ausgewaehlt")
             return
-        host = self.db.get_by_id(self.selected_host_id)
-        if host is None:
+
+        targets = [h for h in self.db.hosts if h.id in target_ids]
+        if not targets:
             return
+
+        if len(targets) == 1:
+            host = targets[0]
+            prompt = f"Host '{host.name}' ({host.host_name}) wirklich loeschen?"
+            title = "Host loeschen"
+        else:
+            preview = ", ".join(h.name for h in targets[:6])
+            if len(targets) > 6:
+                preview += f", … (+{len(targets) - 6})"
+            prompt = f"{len(targets)} markierte Hosts wirklich loeschen?\n\n{preview}"
+            title = "Mehrere Hosts loeschen"
 
         answer = QMessageBox.question(
             self,
-            "Host loeschen",
-            f"Host '{host.name}' ({host.host_name}) wirklich loeschen?",
+            title,
+            prompt,
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
             QMessageBox.StandardButton.No,
         )
@@ -984,13 +1316,13 @@ class SSHCnfgrWindow(QMainWindow):
             return
 
         candidate_db = copy.deepcopy(self.db)
-        candidate_db.hosts = [h for h in candidate_db.hosts if h.id != host.id]
+        removed = candidate_db.bulk_delete_hosts(target_ids)
         if not self._commit_db(candidate_db):
             return
 
         self.action_new_host()
         self._refresh_all()
-        self._set_status(f"Host geloescht: {host.name}")
+        self._set_status(f"{removed} Host(s) geloescht")
 
     # ------------------------------------------------------------------
     # Gruppen-Aktionen

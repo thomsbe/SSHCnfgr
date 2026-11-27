@@ -36,6 +36,8 @@ def render_host_block(
 ) -> str:
     lines: list[str] = [f"Host {host.name}"]
     lines.append(f"  HostName {host.host_name}")
+    if host.ip and host.ip.strip() and host.ip.strip() != host.host_name.strip():
+        lines.append(f"  # IP: {host.ip.strip()}")
 
     if host.user:
         lines.append(f"  User {host.user}")

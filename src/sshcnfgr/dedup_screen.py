@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import copy
 
 from textual.app import ComposeResult
@@ -18,6 +19,7 @@ from textual.widgets import (
 )
 
 from .dedup import (
+    DnsResolutionMap,
     DuplicateGroup,
     FieldConflict,
     MergeDisposition,
@@ -27,6 +29,7 @@ from .dedup import (
     build_merged_host,
     default_conflict_choices,
     find_duplicate_groups,
+    resolve_hostnames_dns,
 )
 from .model import HostDatabase, HostEntry
 from .store import save_database
@@ -40,6 +43,7 @@ class DuplicateReviewScreen(Screen[HostDatabase | None]):
     BINDINGS = [
         ("escape", "close", "Zurueck"),
         ("ctrl+m", "merge_current", "Zusammenfuehren"),
+        ("ctrl+r", "run_dns_check", "DNS-Check"),
         ("n", "next_group", "Naechste"),
     ]
 
@@ -53,12 +57,13 @@ class DuplicateReviewScreen(Screen[HostDatabase | None]):
         self._current_conflicts: list[FieldConflict] = []
         self._conflict_selects: dict[str, Select[str]] = {}
         self._loading_group = False
+        self._dns_map: DnsResolutionMap | None = None
 
     def compose(self) -> ComposeResult:
         yield Header(show_clock=True)
         with Horizontal(id="dedup_toolbar"):
             yield Label(
-                "Potentielle Dubletten (gleicher HostName + Port + User)",
+                "Potentielle Dubletten (HostName / DNS-IP + Port + User)",
                 id="dedup_title",
             )
             yield Checkbox(
@@ -66,6 +71,8 @@ class DuplicateReviewScreen(Screen[HostDatabase | None]):
                 value=False,
                 id="dedup_include_inactive",
             )
+            yield Button("Per DNS pruefen", id="btn_dedup_dns", variant="primary")
+            yield Button("Nur Exakt", id="btn_dedup_dns_reset", disabled=True)
         with Horizontal(id="dedup_body"):
             with Vertical(id="dedup_left"):
                 yield Label("Dubletten-Gruppen", id="dedup_groups_label")
@@ -121,12 +128,13 @@ class DuplicateReviewScreen(Screen[HostDatabase | None]):
 
     async def on_mount(self) -> None:
         groups_table = self.query_one("#dedup_groups_table", DataTable)
-        groups_table.add_columns("Ziel", "Anzahl", "Aliase", "Konflikte")
+        groups_table.add_columns("Ziel", "Match", "Anzahl", "Aliase", "Konflikte")
 
         members_table = self.query_one("#dedup_members_table", DataTable)
         members_table.add_columns(
             "Alias",
             "HostName",
+            "DNS / IP",
             "User",
             "Port",
             "Identity",
@@ -151,9 +159,11 @@ class DuplicateReviewScreen(Screen[HostDatabase | None]):
         self._groups = find_duplicate_groups(
             self._db,
             include_inactive=self._include_inactive,
+            dns_map=self._dns_map,
         )
+        mode_tag = " [inkl. DNS]" if self._dns_map is not None else ""
         self.query_one("#dedup_groups_label", Label).update(
-            f"Dubletten-Gruppen ({len(self._groups)})"
+            f"Dubletten-Gruppen ({len(self._groups)}){mode_tag}"
         )
 
         groups_table = self.query_one("#dedup_groups_table", DataTable)
@@ -164,6 +174,7 @@ class DuplicateReviewScreen(Screen[HostDatabase | None]):
             aliases_text = ", ".join(group.aliases)
             groups_table.add_row(
                 group.label,
+                group.match_badge,
                 str(len(group.hosts)),
                 aliases_text,
                 str(len(conflicts)),
@@ -173,7 +184,10 @@ class DuplicateReviewScreen(Screen[HostDatabase | None]):
         if not self._groups:
             self._selected_index = None
             await self._load_group_details(None)
-            self._set_status("Keine potentiellen Dubletten gefunden.")
+            if self._dns_map is None:
+                self._set_status(
+                    "Keine exakten Dubletten gefunden. Tipp: 'Per DNS pruefen' (Ctrl+R)."
+                )
             return
 
         target_index = min(max(preferred_index, 0), len(self._groups) - 1)
@@ -225,9 +239,15 @@ class DuplicateReviewScreen(Screen[HostDatabase | None]):
                     f"{k}={v}"
                     for k, v in sorted(host.extra_options.items(), key=lambda item: item[0].lower())
                 )
+                dns_info = (
+                    self._dns_map.describe_host_name(host.host_name)
+                    if self._dns_map is not None
+                    else ""
+                )
                 members_table.add_row(
                     host.name,
                     host.host_name,
+                    dns_info,
                     host.user or f"({self._db.resolve_user(host) or '-'})",
                     str(host.port) if host.port is not None else f"({self._db.resolve_port(host)})",
                     identity_display,
@@ -408,6 +428,41 @@ class DuplicateReviewScreen(Screen[HostDatabase | None]):
             await self.action_next_group()
         elif button_id == "btn_dedup_merge":
             await self.action_merge_current()
+        elif button_id == "btn_dedup_dns":
+            await self.action_run_dns_check()
+        elif button_id == "btn_dedup_dns_reset":
+            await self.action_clear_dns()
+
+    async def action_run_dns_check(self) -> None:
+        """Loest Hostnamen explizit auf Nutzeraktion per DNS auf (non-blocking)."""
+        hosts = [h for h in self._db.hosts if self._include_inactive or h.enabled]
+        if not hosts:
+            self._set_status("Keine Hosts zum Aufloesen vorhanden.")
+            return
+
+        dns_btn = self.query_one("#btn_dedup_dns", Button)
+        reset_btn = self.query_one("#btn_dedup_dns_reset", Button)
+        dns_btn.disabled = True
+        self._set_status(f"Loese {len(hosts)} Host(s) per DNS auf…")
+        try:
+            dns_map = await asyncio.to_thread(resolve_hostnames_dns, copy.deepcopy(hosts))
+        finally:
+            dns_btn.disabled = False
+
+        self._dns_map = dns_map
+        reset_btn.disabled = False
+        await self._refresh_groups(preferred_index=0)
+        dns_groups = sum(1 for g in self._groups if g.match_source == "dns")
+        self._set_status(
+            f"DNS-Check fertig ({dns_map.summary()}) — "
+            f"{len(self._groups)} Gruppe(n) gesamt, davon {dns_groups} per DNS."
+        )
+
+    async def action_clear_dns(self) -> None:
+        self._dns_map = None
+        self.query_one("#btn_dedup_dns_reset", Button).disabled = True
+        await self._refresh_groups(preferred_index=0)
+        self._set_status("DNS-Ergebnisse ausgeblendet — nur exakter HostName-Vergleich.")
 
     def action_close(self) -> None:
         self.dismiss(self._db if self._changed else None)

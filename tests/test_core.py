@@ -343,6 +343,89 @@ class GeneratorAndStoreTests(unittest.TestCase):
         self.assertIn("IdentitiesOnly yes", match_prod_section)
         self.assertIn("ProxyJump bastion", match_prod_section)
 
+    def test_host_ip_roundtrip_toml_config_import_and_dedup_merge(self) -> None:
+        from sshcnfgr.dedup import DuplicateGroup, build_merged_host
+        from sshcnfgr.generator import generate_config
+        from sshcnfgr.importer import import_ssh_config
+        from sshcnfgr.store import load_database, save_database
+
+        # Validierung lehnt ungueltige IP-Adressen ab.
+        invalid_host = HostEntry(id="bad", name="bad", host_name="app.intern", ip="not-an-ip")
+        self.assertTrue(any("keine gueltige IP-Adresse" in err for err in invalid_host.validate()))
+
+        db = HostDatabase(
+            hosts=[
+                HostEntry(
+                    id="h1",
+                    name="baer@sdvdmg-mongodb",
+                    host_name="sdvdmg-mongodb.slub-dresden.de",
+                    ip="10.20.30.40",
+                    user="baer",
+                ),
+                HostEntry(
+                    id="h2",
+                    name="baer@10.0.0.5",
+                    host_name="10.0.0.5",
+                    ip="10.0.0.5",
+                    user="baer",
+                ),
+            ]
+        )
+
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            db_path = Path(tmp_dir) / "sshcnfgr.toml"
+            save_database(db, db_path, backup=False)
+            reloaded = load_database(db_path)
+
+            mongo = reloaded.get_by_id("h1")
+            assert mongo is not None
+            self.assertEqual(mongo.ip, "10.20.30.40")
+
+            rendered = generate_config(reloaded, include_timestamp=False)
+            self.assertIn(
+                "  HostName sdvdmg-mongodb.slub-dresden.de\n  # IP: 10.20.30.40",
+                rendered,
+            )
+            # Wenn HostName bereits identisch zur IP ist, keinen redundanten Kommentar schreiben.
+            self.assertNotIn("# IP: 10.0.0.5", rendered)
+
+            cfg_path = Path(tmp_dir) / "config.generated"
+            cfg_path.write_text(rendered, encoding="utf-8")
+            imported_db, _report = import_ssh_config(cfg_path)
+
+            imported_mongo = next(
+                (h for h in imported_db.hosts if h.name == "baer@sdvdmg-mongodb"),
+                None,
+            )
+            assert imported_mongo is not None
+            self.assertEqual(imported_mongo.host_name, "sdvdmg-mongodb.slub-dresden.de")
+            self.assertEqual(imported_mongo.ip, "10.20.30.40")
+
+        # Dedup-Merge uebernimmt IP aus IP-Eintrag automatisch in merged.ip.
+        ip_entry = HostEntry(id="m1", name="old-ip", host_name="10.20.30.40", user="baer")
+        dns_entry = HostEntry(
+            id="m2",
+            name="old-dns",
+            host_name="sdvdmg-mongodb.slub-dresden.de",
+            user="baer",
+        )
+        dup_group = DuplicateGroup(
+            host_name="sdvdmg-mongodb.slub-dresden.de",
+            port=22,
+            user="baer",
+            hosts=[ip_entry, dns_entry],
+            match_source="dns",
+            matched_ips=["10.20.30.40"],
+        )
+        merged = build_merged_host(
+            dup_group,
+            primary_host_id="m2",
+            target_name="baer@sdvdmg-mongodb",
+            resolved_fields={"host_name": "sdvdmg-mongodb.slub-dresden.de"},
+        )
+        self.assertEqual(merged.host_name, "sdvdmg-mongodb.slub-dresden.de")
+        self.assertEqual(merged.ip, "10.20.30.40")
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -601,7 +601,7 @@ wheels = [
 
 [[package]]
 name = "sshcnfgr"
-version = "0.2.0b3"
+version = "1.0.0"
 source = { editable = "." }
 dependencies = [
     { name = "click" },

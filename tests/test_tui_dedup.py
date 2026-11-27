@@ -133,6 +133,65 @@ class TuiDedupTests(unittest.IsolatedAsyncioTestCase):
                     backups = list(tmp.glob("hosts.toml.bak.*"))
                     self.assertGreaterEqual(len(backups), 1)
 
+    async def test_dedup_screen_dns_check_finds_name_vs_ip(self) -> None:
+        from sshcnfgr.dedup import resolve_hostnames_dns
+
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            tmp = Path(tmp_dir)
+            db_path = tmp / "sshcnfgr.toml"
+            settings_path = tmp / "app.toml"
+
+            initial_db = HostDatabase(
+                hosts=[
+                    HostEntry(id="h1", name="srv-ip", host_name="10.0.0.44", user="admin"),
+                    HostEntry(id="h2", name="srv-name", host_name="srv01.intern", user="admin"),
+                ]
+            )
+            save_database(initial_db, db_path, backup=False)
+
+            def _fake_dns(hosts: list[HostEntry]) -> object:
+                return resolve_hostnames_dns(
+                    hosts,
+                    forward_resolver=lambda name: (
+                        {"10.0.0.44"} if name == "srv01.intern" else set()
+                    ),
+                    reverse_resolver=lambda _ip: None,
+                )
+
+            with (
+                patch("sshcnfgr.tui.load_database", side_effect=lambda: load_database(db_path)),
+                patch(
+                    "sshcnfgr.tui.save_database",
+                    side_effect=lambda d: save_database(d, db_path),
+                ),
+                patch(
+                    "sshcnfgr.dedup_screen.save_database",
+                    side_effect=lambda d: save_database(d, db_path),
+                ),
+                patch("sshcnfgr.dedup_screen.resolve_hostnames_dns", side_effect=_fake_dns),
+                patch(
+                    "sshcnfgr.tui.load_ui_theme_name",
+                    side_effect=lambda: load_ui_theme_name(settings_path),
+                ),
+                patch(
+                    "sshcnfgr.tui.save_ui_theme_name",
+                    side_effect=lambda t: save_ui_theme_name(t, settings_path),
+                ),
+            ):
+                app = SSHCnfgrApp()
+                async with app.run_test(size=(120, 40)) as pilot:
+                    await pilot.pause()
+                    await pilot.press("ctrl+u")
+                    await pilot.pause()
+
+                    groups_table = app.screen.query_one("#dedup_groups_table", DataTable)
+                    self.assertEqual(groups_table.row_count, 0)
+
+                    # Expliziten DNS-Check per Ctrl+R ausloesen.
+                    await pilot.press("ctrl+r")
+                    await pilot.pause()
+                    self.assertEqual(groups_table.row_count, 1)
+
 
 if __name__ == "__main__":
     unittest.main()

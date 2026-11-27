@@ -281,6 +281,152 @@ class QtGuiTests(unittest.TestCase):
                 finally:
                     window.close()
 
+    def test_dedup_dialog_dns_matching_and_reset(self) -> None:
+        from sshcnfgr.dedup import resolve_hostnames_dns
+        from sshcnfgr.gui.dedup_dialog import DuplicateReviewDialog
+
+        db = HostDatabase(
+            hosts=[
+                HostEntry(id="h1", name="app-ip", host_name="10.0.0.12", user="ubuntu"),
+                HostEntry(id="h2", name="app-dns", host_name="app01.intern", user="ubuntu"),
+            ]
+        )
+
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            db_path = Path(tmp_dir) / "sshcnfgr.toml"
+            save_database(db, db_path, backup=False)
+
+            def _save(updated_db: HostDatabase) -> None:
+                save_database(updated_db, db_path)
+
+            with patch("sshcnfgr.gui.dedup_dialog.save_database", side_effect=_save):
+                dialog = DuplicateReviewDialog(load_database(db_path))
+                try:
+                    # Exakter Vergleich findet nichts.
+                    self.assertEqual(dialog.groups_table.rowCount(), 0)
+
+                    dns_map = resolve_hostnames_dns(
+                        db.hosts,
+                        forward_resolver=lambda name: (
+                            {"10.0.0.12"} if name == "app01.intern" else set()
+                        ),
+                        reverse_resolver=lambda ip: "app01.intern" if ip == "10.0.0.12" else None,
+                    )
+                    dialog.apply_dns_map(dns_map)
+
+                    self.assertEqual(dialog.groups_table.rowCount(), 1)
+                    self.assertIn("DNS (10.0.0.12)", dialog.groups_table.item(0, 1).text())  # type: ignore[union-attr]
+                    self.assertIn("host_name", dialog._conflict_combos)
+                    # Standardmaessig wird der Hostname statt der nackten IP gewaehlt.
+                    self.assertEqual(
+                        dialog._conflict_combos["host_name"].currentData(),
+                        "app01.intern",
+                    )
+
+                    # Zurueck auf 'Nur Exakt' blendet DNS-Treffer wieder aus.
+                    dialog.action_clear_dns()
+                    self.assertEqual(dialog.groups_table.rowCount(), 0)
+                finally:
+                    dialog.close()
+
+    def test_host_ip_dns_enrichment_and_alias_generator(self) -> None:
+        from PySide6.QtCore import QItemSelectionModel
+
+        from sshcnfgr.enrich import DnsEnrichResult
+        from sshcnfgr.gui.main_window import SSHCnfgrWindow
+
+        db = HostDatabase(
+            hosts=[
+                HostEntry(
+                    id="h1",
+                    name="random-mongo",
+                    host_name="sdvdmg-mongodb",
+                    user="baer",
+                ),
+                HostEntry(
+                    id="h2",
+                    name="old-ip",
+                    host_name="10.0.0.12",
+                    user="baer",
+                ),
+            ]
+        )
+
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            db_path = Path(tmp_dir) / "sshcnfgr.toml"
+            save_database(db, db_path, backup=False)
+
+            def _save(updated_db: HostDatabase) -> None:
+                save_database(updated_db, db_path)
+
+            with patch("sshcnfgr.gui.main_window.save_database", side_effect=_save):
+                window = SSHCnfgrWindow(db=load_database(db_path))
+                try:
+                    # Einzel-Host auswaehlen, DNS-Ergebnis uebernehmen & Alias generieren.
+                    window.hosts_table.selectRow(1)  # random-mongo (alphabetisch nach old-ip)
+                    self.assertEqual(window.selected_host_id, "h1")
+                    window._on_single_dns_enriched("sdvdmg-mongodb.slub-dresden.de", "10.20.30.40")
+                    self.assertEqual(
+                        window.in_host_hostname.text(),
+                        "sdvdmg-mongodb.slub-dresden.de",
+                    )
+                    self.assertEqual(window.in_host_ip.text(), "10.20.30.40")
+
+                    window.action_generate_single_alias()
+                    self.assertEqual(window.in_host_name_alias.text(), "baer@sdvdmg-mongodb")
+                    window.action_save_host()
+
+                    # IP-Spalte (Index 2) & Suche nach IP testen.
+                    window.host_search_input.setText("10.20.30.40")
+                    self.assertEqual(window.hosts_table.rowCount(), 1)
+                    self.assertEqual(window.hosts_table.item(0, 2).text(), "10.20.30.40")  # type: ignore[union-attr]
+                    window.host_search_input.clear()
+
+                    # Sammel-Aktion: DNS-Anreicherung + Aliase generieren fuer beide Hosts.
+                    sel_model = window.hosts_table.selectionModel()
+                    flags = (
+                        QItemSelectionModel.SelectionFlag.Select
+                        | QItemSelectionModel.SelectionFlag.Rows
+                    )
+                    sel_model.select(window.hosts_table.model().index(0, 0), flags)
+                    sel_model.select(window.hosts_table.model().index(1, 0), flags)
+
+                    window.apply_bulk_dns_results(
+                        {"h1", "h2"},
+                        {
+                            "h1": DnsEnrichResult(
+                                host_id="h1",
+                                fqdn="sdvdmg-mongodb.slub-dresden.de",
+                                ip="10.20.30.40",
+                            ),
+                            "h2": DnsEnrichResult(
+                                host_id="h2",
+                                fqdn="db01.slub-dresden.de",
+                                ip="10.0.0.12",
+                            ),
+                        },
+                    )
+                    window.action_bulk_generate_aliases(skip_confirm=True)
+
+                    reloaded = load_database(db_path)
+                    h1 = reloaded.get_by_id("h1")
+                    h2 = reloaded.get_by_id("h2")
+                    assert h1 is not None and h2 is not None
+                    self.assertEqual(h1.name, "baer@sdvdmg-mongodb")
+                    self.assertEqual(h1.ip, "10.20.30.40")
+                    self.assertEqual(h2.name, "baer@db01")
+                    self.assertEqual(h2.host_name, "db01.slub-dresden.de")
+                    self.assertEqual(h2.ip, "10.0.0.12")
+
+                    window._refresh_preview()
+                    preview = window.preview_edit.toPlainText()
+                    self.assertIn("Host baer@sdvdmg-mongodb", preview)
+                    self.assertIn("  # IP: 10.20.30.40", preview)
+                    self.assertIn("Host baer@db01", preview)
+                    self.assertIn("  # IP: 10.0.0.12", preview)
+                finally:
+                    window.close()
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -4,8 +4,8 @@
 
 | Version | Supported |
 | ------- | --------- |
-| `0.2.x` (Beta / Current) | Yes |
-| `0.1.x` | Security fixes only |
+| `1.x` (Current) | Yes |
+| `0.x` (Legacy Beta) | No |
 
 ## Security Design Principles
 

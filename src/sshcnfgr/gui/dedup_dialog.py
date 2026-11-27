@@ -2,8 +2,8 @@ from __future__ import annotations
 
 import copy
 
-from PySide6.QtCore import Qt
-from PySide6.QtGui import QFont
+from PySide6.QtCore import Qt, QThread, Signal
+from PySide6.QtGui import QCloseEvent, QFont
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QCheckBox,
@@ -27,6 +27,7 @@ from PySide6.QtWidgets import (
 )
 
 from ..dedup import (
+    DnsResolutionMap,
     DuplicateGroup,
     MergeDisposition,
     MergePlan,
@@ -35,9 +36,24 @@ from ..dedup import (
     build_merged_host,
     default_conflict_choices,
     find_duplicate_groups,
+    resolve_hostnames_dns,
 )
 from ..model import HostDatabase, HostEntry
 from ..store import save_database
+
+
+class _DnsResolveWorker(QThread):
+    """Fuehrt Forward- und Reverse-DNS-Lookups im Hintergrund aus, ohne die GUI zu blockieren."""
+
+    result_ready = Signal(object)
+
+    def __init__(self, hosts: list[HostEntry], parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self._hosts = hosts
+
+    def run(self) -> None:
+        dns_map = resolve_hostnames_dns(self._hosts, include_ptr=True)
+        self.result_ready.emit(dns_map)
 
 
 def _setup_table(table: QTableWidget, headers: list[str]) -> None:
@@ -58,8 +74,8 @@ class DuplicateReviewDialog(QDialog):
     def __init__(self, db: HostDatabase, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self.setWindowTitle("Dubletten pruefen & zusammenfuehren")
-        self.resize(1060, 680)
-        self.setMinimumSize(820, 520)
+        self.resize(1120, 700)
+        self.setMinimumSize(860, 540)
 
         self.db: HostDatabase = copy.deepcopy(db)
         self.changed = False
@@ -68,6 +84,8 @@ class DuplicateReviewDialog(QDialog):
         self._selected_index: int | None = None
         self._conflict_combos: dict[str, QComboBox] = {}
         self._loading_group = False
+        self._dns_map: DnsResolutionMap | None = None
+        self._dns_worker: _DnsResolveWorker | None = None
 
         self._build_ui()
         self._refresh_groups(preferred_index=0)
@@ -77,7 +95,7 @@ class DuplicateReviewDialog(QDialog):
 
         top_bar = QHBoxLayout()
         title = QLabel(
-            "Potentielle Dubletten (gleicher HostName + effektiver Port + effektiver User)",
+            "Potentielle Dubletten (gleicher HostName / aufgeloeste IP + Port + User)",
             self,
         )
         title_font = title.font()
@@ -87,8 +105,22 @@ class DuplicateReviewDialog(QDialog):
         self.include_inactive_cb = QCheckBox("Inaktive einschliessen", self)
         self.include_inactive_cb.toggled.connect(lambda _: self._refresh_groups(0))
 
+        self.btn_dns_check = QPushButton("Per DNS pruefen", self)
+        self.btn_dns_check.setToolTip(
+            "Loest Hostnamen einmalig per DNS auf (Name -> IP + PTR-Hinweis), "
+            "um versteckte Dubletten zwischen IP und Hostname zu finden."
+        )
+        self.btn_dns_check.clicked.connect(self.action_run_dns_check)
+
+        self.btn_dns_reset = QPushButton("Nur Exakt", self)
+        self.btn_dns_reset.setToolTip("DNS-Ergebnisse verwerfen und wieder nur exakt vergleichen")
+        self.btn_dns_reset.setEnabled(False)
+        self.btn_dns_reset.clicked.connect(self.action_clear_dns)
+
         top_bar.addWidget(title, stretch=1)
         top_bar.addWidget(self.include_inactive_cb)
+        top_bar.addWidget(self.btn_dns_check)
+        top_bar.addWidget(self.btn_dns_reset)
         root.addLayout(top_bar)
 
         splitter = QSplitter(Qt.Orientation.Horizontal, self)
@@ -101,7 +133,7 @@ class DuplicateReviewDialog(QDialog):
         left_layout.addWidget(self.groups_label)
 
         self.groups_table = QTableWidget(left_widget)
-        _setup_table(self.groups_table, ["Ziel", "Anzahl", "Aliase", "Konflikte"])
+        _setup_table(self.groups_table, ["Ziel", "Match", "Anzahl", "Aliase", "Konflikte"])
         self.groups_table.itemSelectionChanged.connect(self._on_group_selection_changed)
         left_layout.addWidget(self.groups_table, stretch=1)
 
@@ -127,7 +159,17 @@ class DuplicateReviewDialog(QDialog):
         self.members_table = QTableWidget(members_box)
         _setup_table(
             self.members_table,
-            ["Alias", "HostName", "User", "Port", "Identity", "Gruppen", "Extra", "Aktiv"],
+            [
+                "Alias",
+                "HostName",
+                "DNS / IP",
+                "User",
+                "Port",
+                "Identity",
+                "Gruppen",
+                "Extra",
+                "Aktiv",
+            ],
         )
         self.members_table.setMinimumHeight(140)
         members_layout.addWidget(self.members_table)
@@ -191,8 +233,16 @@ class DuplicateReviewDialog(QDialog):
 
         splitter.addWidget(left_widget)
         splitter.addWidget(right_scroll)
-        splitter.setSizes([380, 660])
+        splitter.setSizes([420, 680])
         root.addWidget(splitter, stretch=1)
+
+    def closeEvent(self, event: QCloseEvent) -> None:
+        if self._dns_worker is not None and self._dns_worker.isRunning():
+            try:
+                self._dns_worker.result_ready.disconnect(self._on_dns_resolved)
+            except RuntimeError:
+                pass
+        super().closeEvent(event)
 
     def _current_group(self) -> DuplicateGroup | None:
         if self._selected_index is None:
@@ -206,10 +256,63 @@ class DuplicateReviewDialog(QDialog):
         while self.conflicts_layout.rowCount() > 0:
             self.conflicts_layout.removeRow(0)
 
+    def action_run_dns_check(self) -> None:
+        """Startet den expliziten DNS-Check im Hintergrund-Thread."""
+        if self._dns_worker is not None and self._dns_worker.isRunning():
+            return
+
+        include_inactive = self.include_inactive_cb.isChecked()
+        hosts = [h for h in self.db.hosts if include_inactive or h.enabled]
+        if not hosts:
+            self.status_label.setText("Keine Hosts zum Aufloesen vorhanden.")
+            return
+
+        self.btn_dns_check.setEnabled(False)
+        self.btn_dns_check.setText("DNS laeuft…")
+        self.btn_dns_reset.setEnabled(False)
+        self.status_label.setText(f"Loese {len(hosts)} Host(s) per DNS auf…")
+
+        worker = _DnsResolveWorker(copy.deepcopy(hosts), parent=self)
+        worker.result_ready.connect(self._on_dns_resolved)
+        worker.finished.connect(worker.deleteLater)
+        self._dns_worker = worker
+        worker.start()
+
+    def _on_dns_resolved(self, dns_map: object) -> None:
+        self._dns_worker = None
+        self.btn_dns_check.setEnabled(True)
+        self.btn_dns_check.setText("Per DNS neu pruefen")
+        if isinstance(dns_map, DnsResolutionMap):
+            self.apply_dns_map(dns_map)
+
+    def apply_dns_map(self, dns_map: DnsResolutionMap) -> None:
+        """Uebernimmt ein DNS-Aufloesungsergebnis und aktualisiert die Dublettenliste."""
+        self._dns_map = dns_map
+        self.btn_dns_reset.setEnabled(True)
+        self._refresh_groups(preferred_index=0)
+        dns_groups = sum(1 for g in self._groups if g.match_source == "dns")
+        self.status_label.setText(
+            f"DNS-Check fertig ({dns_map.summary()}) — "
+            f"{len(self._groups)} Gruppe(n) gesamt, davon {dns_groups} per DNS."
+        )
+
+    def action_clear_dns(self) -> None:
+        """Schaltet zurueck auf rein exakten HostName-Vergleich."""
+        self._dns_map = None
+        self.btn_dns_reset.setEnabled(False)
+        self.btn_dns_check.setText("Per DNS pruefen")
+        self._refresh_groups(preferred_index=0)
+        self.status_label.setText("DNS-Ergebnisse ausgeblendet — nur exakter HostName-Vergleich.")
+
     def _refresh_groups(self, preferred_index: int = 0) -> None:
         include_inactive = self.include_inactive_cb.isChecked()
-        self._groups = find_duplicate_groups(self.db, include_inactive=include_inactive)
-        self.groups_label.setText(f"Dubletten-Gruppen ({len(self._groups)})")
+        self._groups = find_duplicate_groups(
+            self.db,
+            include_inactive=include_inactive,
+            dns_map=self._dns_map,
+        )
+        mode_tag = " [inkl. DNS]" if self._dns_map is not None else ""
+        self.groups_label.setText(f"Dubletten-Gruppen ({len(self._groups)}){mode_tag}")
 
         self.groups_table.blockSignals(True)
         try:
@@ -217,9 +320,10 @@ class DuplicateReviewDialog(QDialog):
             for idx, group in enumerate(self._groups):
                 conflicts = analyze_group_conflicts(group)
                 self.groups_table.setItem(idx, 0, QTableWidgetItem(group.label))
-                self.groups_table.setItem(idx, 1, QTableWidgetItem(str(len(group.hosts))))
-                self.groups_table.setItem(idx, 2, QTableWidgetItem(", ".join(group.aliases)))
-                self.groups_table.setItem(idx, 3, QTableWidgetItem(str(len(conflicts))))
+                self.groups_table.setItem(idx, 1, QTableWidgetItem(group.match_badge))
+                self.groups_table.setItem(idx, 2, QTableWidgetItem(str(len(group.hosts))))
+                self.groups_table.setItem(idx, 3, QTableWidgetItem(", ".join(group.aliases)))
+                self.groups_table.setItem(idx, 4, QTableWidgetItem(str(len(conflicts))))
 
             if self._groups:
                 target_idx = min(max(preferred_index, 0), len(self._groups) - 1)
@@ -231,8 +335,11 @@ class DuplicateReviewDialog(QDialog):
             self.groups_table.blockSignals(False)
 
         self._load_group_details(self._current_group())
-        if not self._groups:
-            self.status_label.setText("Keine potentiellen Dubletten gefunden.")
+        if not self._groups and self._dns_map is None:
+            self.status_label.setText(
+                "Keine exakten Dubletten gefunden. Tipp: 'Per DNS pruefen' findet auch "
+                "Name-vs-IP-Dubletten."
+            )
 
     def _load_group_details(self, group: DuplicateGroup | None) -> None:
         self._loading_group = True
@@ -250,8 +357,9 @@ class DuplicateReviewDialog(QDialog):
                 return
 
             self.btn_merge.setEnabled(True)
+            badge = f" — {group.match_badge}" if group.match_source == "dns" else ""
             self.members_box.setTitle(
-                f"Kandidaten fuer {group.label} ({len(group.hosts)} Eintraege)"
+                f"Kandidaten fuer {group.label} ({len(group.hosts)} Eintraege{badge})"
             )
 
             self.members_table.setRowCount(len(group.hosts))
@@ -266,27 +374,33 @@ class DuplicateReviewDialog(QDialog):
                     f"{k}={v}"
                     for k, v in sorted(host.extra_options.items(), key=lambda pair: pair[0].lower())
                 )
+                dns_info = (
+                    self._dns_map.describe_host_name(host.host_name)
+                    if self._dns_map is not None
+                    else ""
+                )
                 self.members_table.setItem(row, 0, QTableWidgetItem(host.name))
                 self.members_table.setItem(row, 1, QTableWidgetItem(host.host_name))
+                self.members_table.setItem(row, 2, QTableWidgetItem(dns_info))
                 self.members_table.setItem(
                     row,
-                    2,
+                    3,
                     QTableWidgetItem(host.user or f"({self.db.resolve_user(host) or '-'})"),
                 )
                 self.members_table.setItem(
                     row,
-                    3,
+                    4,
                     QTableWidgetItem(
                         str(host.port)
                         if host.port is not None
                         else f"({self.db.resolve_port(host)})"
                     ),
                 )
-                self.members_table.setItem(row, 4, QTableWidgetItem(identity_display))
-                self.members_table.setItem(row, 5, QTableWidgetItem(", ".join(host.groups)))
-                self.members_table.setItem(row, 6, QTableWidgetItem(extra_summary))
+                self.members_table.setItem(row, 5, QTableWidgetItem(identity_display))
+                self.members_table.setItem(row, 6, QTableWidgetItem(", ".join(host.groups)))
+                self.members_table.setItem(row, 7, QTableWidgetItem(extra_summary))
                 self.members_table.setItem(
-                    row, 7, QTableWidgetItem("Ja" if host.enabled else "Nein")
+                    row, 8, QTableWidgetItem("Ja" if host.enabled else "Nein")
                 )
 
                 state_label = "aktiv" if host.enabled else "inaktiv"

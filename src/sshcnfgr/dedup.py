@@ -1,12 +1,179 @@
 from __future__ import annotations
 
 import copy
+import ipaddress
+import socket
+from collections.abc import Callable
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
 from typing import Literal
 
 from .model import HostDatabase, HostEntry
 
 MergeDisposition = Literal["disable", "delete"]
+
+
+def normalize_ip(value: str) -> str | None:
+    """Gibt eine normalisierte IPv4/IPv6-Adresse zurueck oder None bei Hostnamen."""
+    cleaned = value.strip()
+    if not cleaned:
+        return None
+    try:
+        return str(ipaddress.ip_address(cleaned))
+    except ValueError:
+        return None
+
+
+def is_ip_address(value: str) -> bool:
+    """Prueft, ob ein String eine direkte IPv4- oder IPv6-Adresse ist."""
+    return normalize_ip(value) is not None
+
+
+@dataclass(slots=True)
+class DnsResolutionMap:
+    """Ergebnis eines explizit angestossenen DNS-Checks (Forward Name->IP & Reverse PTR)."""
+
+    ips_by_host: dict[str, set[str]] = field(default_factory=dict)
+    ptr_by_ip: dict[str, str] = field(default_factory=dict)
+    unresolved: list[str] = field(default_factory=list)
+    resolved_count: int = 0
+    ptr_count: int = 0
+
+    def describe_host_name(self, host_name: str) -> str:
+        """Kurze Anzeige fuer Tabellen: aufgeloeste IPs oder PTR-Hinweis."""
+        norm = host_name.strip().lower()
+        if not norm:
+            return ""
+        ip_literal = normalize_ip(norm)
+        if ip_literal is not None:
+            ptr = self.ptr_by_ip.get(ip_literal)
+            return f"PTR: {ptr}" if ptr else ""
+
+        ips = sorted(self.ips_by_host.get(norm, set()))
+        if not ips:
+            return "(nicht aufloesbar)" if norm in self.unresolved else ""
+        if len(ips) <= 2:
+            return ", ".join(ips)
+        return f"{ips[0]}, {ips[1]} (+{len(ips) - 2})"
+
+    def summary(self) -> str:
+        parts = [f"{self.resolved_count} aufgeloest"]
+        if self.unresolved:
+            parts.append(f"{len(self.unresolved)} nicht aufloesbar")
+        if self.ptr_count:
+            parts.append(f"{self.ptr_count} PTR-Hinweise")
+        return ", ".join(parts)
+
+
+def _default_forward_resolve(hostname: str) -> set[str]:
+    try:
+        infos = socket.getaddrinfo(hostname, None, type=socket.SOCK_STREAM)
+    except (socket.gaierror, OSError):
+        return set()
+
+    ips: set[str] = set()
+    for info in infos:
+        sockaddr = info[4]
+        if not sockaddr:
+            continue
+        ip_str = normalize_ip(str(sockaddr[0]))
+        if ip_str is not None:
+            ips.add(ip_str)
+    return ips
+
+
+def _default_reverse_resolve(ip_addr: str) -> str | None:
+    try:
+        hostname, _, _ = socket.gethostbyaddr(ip_addr)
+    except (socket.herror, socket.gaierror, OSError):
+        return None
+    cleaned = hostname.strip().rstrip(".")
+    if not cleaned or normalize_ip(cleaned) is not None:
+        return None
+    return cleaned
+
+
+def resolve_hostnames_dns(
+    hosts: list[HostEntry],
+    *,
+    max_workers: int = 10,
+    include_ptr: bool = True,
+    forward_resolver: Callable[[str], set[str]] | None = None,
+    reverse_resolver: Callable[[str], str | None] | None = None,
+) -> DnsResolutionMap:
+    """Loest Hostnamen parallel per Forward-DNS (Name->IP) und optional PTR (IP->Name) auf.
+
+    Wird bewusst nur auf Nutzeraktion (Button) aufgerufen, niemals automatisch beim Start.
+    """
+    fwd = forward_resolver or _default_forward_resolve
+    rev = reverse_resolver or _default_reverse_resolve
+
+    ips_by_host: dict[str, set[str]] = {}
+    ptr_by_ip: dict[str, str] = {}
+    names_to_resolve: list[str] = []
+    literal_ips: set[str] = set()
+
+    seen_names: set[str] = set()
+    for host in hosts:
+        norm = host.host_name.strip().lower()
+        if not norm or norm in seen_names:
+            continue
+        seen_names.add(norm)
+
+        ip_literal = normalize_ip(norm)
+        if ip_literal is not None:
+            ips_by_host[norm] = {ip_literal}
+            literal_ips.add(ip_literal)
+        else:
+            names_to_resolve.append(norm)
+
+    unresolved: list[str] = []
+    resolved_count = 0
+
+    total_tasks = len(names_to_resolve) + (len(literal_ips) if include_ptr else 0)
+    if total_tasks == 0:
+        return DnsResolutionMap(ips_by_host=ips_by_host)
+
+    worker_count = max(1, min(max_workers, total_tasks))
+    with ThreadPoolExecutor(max_workers=worker_count) as pool:
+        fwd_futures = {pool.submit(fwd, name): name for name in names_to_resolve}
+        rev_futures = (
+            {pool.submit(rev, ip): ip for ip in sorted(literal_ips)} if include_ptr else {}
+        )
+
+        for future in as_completed(fwd_futures):
+            name = fwd_futures[future]
+            try:
+                raw_ips = future.result()
+            except Exception:
+                raw_ips = set()
+            normalized_ips = {
+                ip_norm for raw_ip in raw_ips if (ip_norm := normalize_ip(raw_ip)) is not None
+            }
+            if normalized_ips:
+                ips_by_host[name] = normalized_ips
+                resolved_count += 1
+            else:
+                unresolved.append(name)
+
+        for future in as_completed(rev_futures):
+            ip = rev_futures[future]
+            try:
+                ptr = future.result()
+            except Exception:
+                ptr = None
+            if ptr:
+                cleaned = ptr.strip().rstrip(".")
+                if cleaned and normalize_ip(cleaned) is None:
+                    ptr_by_ip[ip] = cleaned
+
+    return DnsResolutionMap(
+        ips_by_host=ips_by_host,
+        ptr_by_ip=ptr_by_ip,
+        unresolved=sorted(unresolved),
+        resolved_count=resolved_count,
+        ptr_count=len(ptr_by_ip),
+    )
 
 
 @dataclass(slots=True)
@@ -36,12 +203,15 @@ class FieldConflict:
 
 @dataclass(slots=True)
 class DuplicateGroup:
-    """Gruppe von Hosts mit identischem Ziel (HostName + effektiver Port + effektiver User)."""
+    """Gruppe von Hosts mit identischem Ziel (HostName oder aufgeloeste IP + Port + User)."""
 
     host_name: str
     port: int
     user: str
     hosts: list[HostEntry] = field(default_factory=list)
+    match_source: str = "exact"
+    matched_ips: list[str] = field(default_factory=list)
+    ptr_names: list[str] = field(default_factory=list)
 
     @property
     def key(self) -> tuple[str, int, str]:
@@ -52,6 +222,17 @@ class DuplicateGroup:
         if self.user:
             return f"{self.user}@{self.host_name}:{self.port}"
         return f"{self.host_name}:{self.port}"
+
+    @property
+    def match_badge(self) -> str:
+        if self.match_source == "dns":
+            if self.matched_ips:
+                preview = ", ".join(self.matched_ips[:2])
+                if len(self.matched_ips) > 2:
+                    preview += f" (+{len(self.matched_ips) - 2})"
+                return f"DNS ({preview})"
+            return "DNS"
+        return "Exakt"
 
     @property
     def aliases(self) -> list[str]:
@@ -75,10 +256,9 @@ class MergePlan:
     disposition: MergeDisposition = "disable"
 
 
-def find_duplicate_groups(
+def _find_exact_duplicate_groups(
     db: HostDatabase, *, include_inactive: bool = False
 ) -> list[DuplicateGroup]:
-    """Findet potentielle Dubletten mit gleichem Ziel (HostName, Port, User)."""
     buckets: dict[tuple[str, int, str], list[HostEntry]] = {}
 
     for host in db.sorted_hosts():
@@ -103,10 +283,134 @@ def find_duplicate_groups(
                     port=port,
                     user=user,
                     hosts=members,
+                    match_source="exact",
+                )
+            )
+    return groups
+
+
+def find_duplicate_groups(
+    db: HostDatabase,
+    *,
+    include_inactive: bool = False,
+    dns_map: DnsResolutionMap | None = None,
+) -> list[DuplicateGroup]:
+    """Findet potentielle Dubletten mit gleichem Ziel (HostName/IP, Port, User).
+
+    Ist ``dns_map`` angegeben, werden zusaetzlich Hosts mit gleichem Port/User
+    zusammengefasst, die auf mindestens eine gemeinsame IP-Adresse aufloesen.
+    """
+    if dns_map is None:
+        return _find_exact_duplicate_groups(db, include_inactive=include_inactive)
+
+    by_port_user: dict[tuple[int, str], list[HostEntry]] = {}
+    for host in db.sorted_hosts():
+        if not include_inactive and not host.enabled:
+            continue
+        if not host.host_name.strip():
+            continue
+        effective_port = db.resolve_port(host)
+        effective_user = (db.resolve_user(host) or "").strip()
+        by_port_user.setdefault((effective_port, effective_user), []).append(host)
+
+    groups: list[DuplicateGroup] = []
+
+    for (port, user), bucket_hosts in sorted(by_port_user.items()):
+        if len(bucket_hosts) < 2:
+            continue
+
+        # Union-Find innerhalb des (port, user)-Buckets:
+        # verbindet identische HostNames sowie gemeinsame aufgeloeste IPs.
+        parent = list(range(len(bucket_hosts)))
+
+        def _find(idx: int) -> int:
+            while parent[idx] != idx:
+                parent[idx] = parent[parent[idx]]
+                idx = parent[idx]
+            return idx
+
+        def _union(a: int, b: int) -> None:
+            ra, rb = _find(a), _find(b)
+            if ra != rb:
+                parent[rb] = ra
+
+        first_by_name: dict[str, int] = {}
+        first_by_ip: dict[str, int] = {}
+
+        for idx, host in enumerate(bucket_hosts):
+            norm_name = host.host_name.strip().lower()
+            if norm_name in first_by_name:
+                _union(first_by_name[norm_name], idx)
+            else:
+                first_by_name[norm_name] = idx
+
+            host_ips = dns_map.ips_by_host.get(norm_name)
+            if host_ips is None:
+                ip_literal = normalize_ip(norm_name)
+                host_ips = {ip_literal} if ip_literal is not None else set()
+
+            for ip_addr in host_ips:
+                if ip_addr in first_by_ip:
+                    _union(first_by_ip[ip_addr], idx)
+                else:
+                    first_by_ip[ip_addr] = idx
+
+        components: dict[int, list[HostEntry]] = {}
+        for idx, host in enumerate(bucket_hosts):
+            components.setdefault(_find(idx), []).append(host)
+
+        for members in components.values():
+            if len(members) < 2:
+                continue
+
+            sorted_members = sorted(members, key=lambda h: h.name.lower())
+            distinct_names = sorted({h.host_name.strip().lower() for h in sorted_members})
+
+            ip_to_names: dict[str, set[str]] = {}
+            all_ips: set[str] = set()
+            for norm_name in distinct_names:
+                resolved_ips = dns_map.ips_by_host.get(norm_name)
+                if resolved_ips is None:
+                    ip_literal = normalize_ip(norm_name)
+                    resolved_ips = {ip_literal} if ip_literal is not None else set()
+                for ip_addr in resolved_ips:
+                    all_ips.add(ip_addr)
+                    ip_to_names.setdefault(ip_addr, set()).add(norm_name)
+
+            if len(distinct_names) == 1:
+                match_source = "exact"
+                display_host = distinct_names[0]
+                matched_ips = sorted(all_ips)
+            else:
+                match_source = "dns"
+                shared_ips = sorted(ip for ip, names in ip_to_names.items() if len(names) >= 2)
+                matched_ips = shared_ips or sorted(all_ips)
+                non_ip_names = [n for n in distinct_names if not is_ip_address(n)]
+                display_host = non_ip_names[0] if non_ip_names else matched_ips[0]
+
+            existing_lower = set(distinct_names)
+            ptr_names = sorted(
+                {
+                    ptr
+                    for ip_addr in all_ips
+                    if (ptr := dns_map.ptr_by_ip.get(ip_addr))
+                    and ptr.lower() not in existing_lower
+                }
+            )
+
+            groups.append(
+                DuplicateGroup(
+                    host_name=display_host,
+                    port=port,
+                    user=user,
+                    hosts=sorted_members,
+                    match_source=match_source,
+                    matched_ips=matched_ips,
+                    ptr_names=ptr_names,
                 )
             )
 
-    return groups
+    return sorted(groups, key=lambda g: (g.host_name, g.port, g.user))
 
 
 def _collect_distinct_values(
@@ -152,12 +456,22 @@ def analyze_group_conflicts(group: DuplicateGroup) -> list[FieldConflict]:
         group.hosts,
         [(h.name, h.host_name) for h in group.hosts],
     )
-    if len(host_name_options) >= 2:
+    existing_host_values_lower = {
+        opt.value.lower() for opt in host_name_options if opt.value is not None
+    }
+    ptr_options = [
+        ConflictOption(value=ptr, sources=["PTR"])
+        for ptr in group.ptr_names
+        if ptr.lower() not in existing_host_values_lower
+    ]
+    all_host_name_options = [*host_name_options, *ptr_options]
+
+    if len(all_host_name_options) >= 2:
         conflicts.append(
             FieldConflict(
                 field="host_name",
-                label="HostName (Schreibweise)",
-                options=host_name_options,
+                label="HostName",
+                options=all_host_name_options,
                 allow_empty=False,
             )
         )
@@ -215,16 +529,31 @@ def default_conflict_choices(
     primary_host_id: str,
     conflicts: list[FieldConflict],
 ) -> dict[str, str | None]:
-    """Waehlt pro Konflikt den Wert des Primary-Hosts (oder den ersten verfuegbaren Wert)."""
+    """Waehlt pro Konflikt einen sinnvollen Standardwert.
+
+    Bei einem HostName-Konflikt zwischen Name und IP wird ein sprechender Hostname
+    aus einem der Host-Eintraege bevorzugt.
+    """
     primary = group.get_host_by_id(primary_host_id)
     choices: dict[str, str | None] = {}
 
     for conflict in conflicts:
         selected: str | None = None
-        if primary is not None:
-            if conflict.field == "host_name" and primary.host_name.strip():
+        if conflict.field == "host_name":
+            if primary is not None and primary.host_name.strip():
+                primary_hn = primary.host_name.strip()
+                if not is_ip_address(primary_hn):
+                    selected = primary_hn
+            if selected is None:
+                # Bevorzuge einen echten Hostnamen aus den Host-Eintraegen (nicht PTR).
+                for opt in conflict.options:
+                    if opt.value and opt.sources != ["PTR"] and not is_ip_address(opt.value):
+                        selected = opt.value
+                        break
+            if selected is None and primary is not None and primary.host_name.strip():
                 selected = primary.host_name.strip()
-            elif conflict.field == "identity" and primary.identity:
+        elif primary is not None:
+            if conflict.field == "identity" and primary.identity:
                 selected = primary.identity.strip()
             elif conflict.field == "identity_file" and primary.identity_file:
                 selected = primary.identity_file.strip()
@@ -287,6 +616,18 @@ def build_merged_host(
         merged.host_name = resolved["host_name"]
     else:
         merged.host_name = primary.host_name.strip()
+
+    # IP-Feld uebernehmen: entweder explizites host.ip oder eine zusammengefuhrte IP-HostName.
+    explicit_ip = _first_non_empty([h.ip for h in ordered])
+    if explicit_ip:
+        merged.ip = explicit_ip
+    elif not is_ip_address(merged.host_name):
+        fallback_ip = next(
+            (ip_norm for h in ordered if (ip_norm := normalize_ip(h.host_name)) is not None),
+            None,
+        )
+        if fallback_ip:
+            merged.ip = fallback_ip
 
     merged.user = _first_non_empty([h.user for h in ordered])
 

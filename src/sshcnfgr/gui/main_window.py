@@ -3,8 +3,8 @@ from __future__ import annotations
 import copy
 from pathlib import Path
 
-from PySide6.QtCore import QItemSelectionModel, QPoint, Qt, Signal
-from PySide6.QtGui import QAction, QColor, QDropEvent, QFont, QKeySequence
+from PySide6.QtCore import QItemSelectionModel, QPoint, Qt, QThread, Signal
+from PySide6.QtGui import QAction, QCloseEvent, QColor, QDropEvent, QFont, QKeySequence
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QCheckBox,
@@ -32,6 +32,14 @@ from PySide6.QtWidgets import (
 )
 
 from ..dedup import find_duplicate_groups
+from ..enrich import (
+    DnsEnrichResult,
+    apply_dns_enrichment,
+    bulk_generate_aliases,
+    enrich_hosts_dns,
+    resolve_fqdn_and_ip,
+    suggest_host_alias,
+)
 from ..generator import generate_config, write_generated_config
 from ..identities import discover_ssh_identities, merge_discovered_identities
 from ..importer import import_ssh_config
@@ -122,6 +130,40 @@ class ReorderableTableWidget(QTableWidget):
             self.row_moved.emit(from_row, to_row)
 
 
+class _SingleDnsEnrichWorker(QThread):
+    """Loest FQDN & IP fuer einen einzelnen HostName im Hintergrund auf."""
+
+    result_ready = Signal(object, object)
+
+    def __init__(self, host_name: str, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self._host_name = host_name
+
+    def run(self) -> None:
+        fqdn, ip_addr = resolve_fqdn_and_ip(self._host_name)
+        self.result_ready.emit(fqdn, ip_addr)
+
+
+class _BulkDnsEnrichWorker(QThread):
+    """Loest FQDN & IP fuer mehrere markierte Hosts parallel im Hintergrund auf."""
+
+    result_ready = Signal(object, object)
+
+    def __init__(
+        self,
+        hosts: list[HostEntry],
+        target_ids: set[str],
+        parent: QWidget | None = None,
+    ) -> None:
+        super().__init__(parent)
+        self._hosts = hosts
+        self._target_ids = target_ids
+
+    def run(self) -> None:
+        results = enrich_hosts_dns(self._hosts)
+        self.result_ready.emit(self._target_ids, results)
+
+
 class SSHCnfgrWindow(QMainWindow):
     """Qt6 Hauptfenster fuer SSHCnfgr mit Hosts-, Gruppen-, Identity- und Vorschau-Tab."""
 
@@ -136,6 +178,8 @@ class SSHCnfgrWindow(QMainWindow):
         self._selected_host_ids: set[str] = set()
         self.selected_group_name: str | None = None
         self.selected_identity_name: str | None = None
+        self._single_dns_worker: _SingleDnsEnrichWorker | None = None
+        self._bulk_dns_worker: _BulkDnsEnrichWorker | None = None
 
         self._build_menu_and_toolbar()
         self._build_central_ui()
@@ -213,7 +257,7 @@ class SSHCnfgrWindow(QMainWindow):
         filter_row = QHBoxLayout()
         self.host_search_input = QLineEdit(left_widget)
         self.host_search_input.setPlaceholderText(
-            "Suchen (Alias, HostName, User, Gruppe, Tag)…"
+            "Suchen (Alias, HostName, IP, User, Gruppe, Tag)…"
         )
         self.host_search_input.setClearButtonEnabled(True)
         self.host_search_input.textChanged.connect(self._refresh_hosts_table)
@@ -228,7 +272,7 @@ class SSHCnfgrWindow(QMainWindow):
         self.hosts_table = QTableWidget(left_widget)
         _configure_readonly_table(
             self.hosts_table,
-            ["Alias", "HostName", "User", "Port", "Identity", "Gruppen", "Aktiv"],
+            ["Alias", "HostName", "IP", "User", "Port", "Identity", "Gruppen", "Aktiv"],
         )
         # Mehrfachauswahl (Ctrl+Klick, Shift+Klick, Ctrl+A) + Rechtsklick-Menue
         self.hosts_table.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
@@ -294,8 +338,20 @@ class SSHCnfgrWindow(QMainWindow):
         self.btn_bulk_enable.clicked.connect(lambda: self.action_bulk_set_enabled(True))
         self.btn_bulk_disable = QPushButton("Alle deaktivieren", bulk_box)
         self.btn_bulk_disable.clicked.connect(lambda: self.action_bulk_set_enabled(False))
+        self.btn_bulk_aliases = QPushButton("Aliase generieren", bulk_box)
+        self.btn_bulk_aliases.setToolTip(
+            "Benennt markierte Hosts nach dem Schema USER@kurzname (oder USER@ip) um"
+        )
+        self.btn_bulk_aliases.clicked.connect(self.action_bulk_generate_aliases)
+        self.btn_bulk_dns_enrich = QPushButton("DNS anreichern", bulk_box)
+        self.btn_bulk_dns_enrich.setToolTip(
+            "Ergaenzt vollen FQDN (bei Kurznamen/IPs) und IP-Adresse per DNS"
+        )
+        self.btn_bulk_dns_enrich.clicked.connect(self.action_bulk_dns_enrich)
         bulk_state_row.addWidget(self.btn_bulk_enable)
         bulk_state_row.addWidget(self.btn_bulk_disable)
+        bulk_state_row.addWidget(self.btn_bulk_aliases)
+        bulk_state_row.addWidget(self.btn_bulk_dns_enrich)
         bulk_state_row.addStretch(1)
         bulk_layout.addLayout(bulk_state_row)
 
@@ -310,17 +366,38 @@ class SSHCnfgrWindow(QMainWindow):
         details_group = QGroupBox("Host Details", right_container)
         form = QFormLayout(details_group)
 
+        alias_row = QHBoxLayout()
         self.in_host_name_alias = QLineEdit(details_group)
-        self.in_host_name_alias.setPlaceholderText("z. B. web-prod")
+        self.in_host_name_alias.setPlaceholderText("z. B. baer@sdvdmg-mongodb")
+        self.btn_generate_alias = QPushButton("Name generieren", details_group)
+        self.btn_generate_alias.setToolTip(
+            "Erzeugt Alias im Format USER@kurzname (oder USER@ip) fuer VS Code"
+        )
+        self.btn_generate_alias.clicked.connect(self.action_generate_single_alias)
+        alias_row.addWidget(self.in_host_name_alias, stretch=1)
+        alias_row.addWidget(self.btn_generate_alias)
 
+        hostname_row = QHBoxLayout()
         self.in_host_hostname = QLineEdit(details_group)
-        self.in_host_hostname.setPlaceholderText("IP oder FQDN")
+        self.in_host_hostname.setPlaceholderText("FQDN oder IP")
+        self.btn_enrich_single = QPushButton("DNS (FQDN/IP)", details_group)
+        self.btn_enrich_single.setToolTip(
+            "Loest HostName per DNS auf: ergaenzt vollen FQDN und IP-Adresse"
+        )
+        self.btn_enrich_single.clicked.connect(self.action_enrich_single_host)
+        hostname_row.addWidget(self.in_host_hostname, stretch=1)
+        hostname_row.addWidget(self.btn_enrich_single)
+
+        self.in_host_ip = QLineEdit(details_group)
+        self.in_host_ip.setPlaceholderText(
+            "optional (z. B. per DNS ermittelt, als # IP: in Config)"
+        )
 
         self.in_host_user = QLineEdit(details_group)
-        self.in_host_user.setPlaceholderText("optional (leer = Global/System)")
+        self.in_host_user.setPlaceholderText("optional (leer = Gruppe/Global/System)")
 
         self.in_host_port = QLineEdit(details_group)
-        self.in_host_port.setPlaceholderText("optional (leer = 22 / Global)")
+        self.in_host_port.setPlaceholderText("optional (leer = 22 / Gruppe / Global)")
 
         self.in_host_identity = QComboBox(details_group)
 
@@ -350,8 +427,9 @@ class SSHCnfgrWindow(QMainWindow):
         self.lbl_host_effective = QLabel("", details_group)
         self.lbl_host_effective.setWordWrap(True)
 
-        form.addRow("Alias (Host):", self.in_host_name_alias)
-        form.addRow("HostName:", self.in_host_hostname)
+        form.addRow("Alias (Host):", alias_row)
+        form.addRow("HostName:", hostname_row)
+        form.addRow("IP (Info):", self.in_host_ip)
         form.addRow("User:", self.in_host_user)
         form.addRow("Port:", self.in_host_port)
         form.addRow("Identity Profile:", self.in_host_identity)
@@ -692,6 +770,9 @@ class SSHCnfgrWindow(QMainWindow):
 
         self.btn_bulk_enable.setEnabled(has_selection)
         self.btn_bulk_disable.setEnabled(has_selection)
+        self.btn_bulk_aliases.setEnabled(has_selection)
+        bulk_dns_busy = self._bulk_dns_worker is not None and self._bulk_dns_worker.isRunning()
+        self.btn_bulk_dns_enrich.setEnabled(has_selection and not bulk_dns_busy)
         self.btn_bulk_add_group.setEnabled(has_selection and has_group)
         self.btn_bulk_primary_group.setEnabled(has_selection and has_group)
         self.btn_bulk_remove_group.setEnabled(has_selection and has_group)
@@ -743,6 +824,7 @@ class SSHCnfgrWindow(QMainWindow):
             [
                 host.name,
                 host.host_name,
+                host.ip or "",
                 host.user or "",
                 self.db.resolve_user(host) or "",
                 *host.groups,
@@ -787,9 +869,10 @@ class SSHCnfgrWindow(QMainWindow):
 
                 table.setItem(row, 0, _make_item(host.name, user_data=host.id))
                 table.setItem(row, 1, _make_item(host.host_name))
+                table.setItem(row, 2, _make_item(host.ip or "", muted=bool(host.ip)))
                 table.setItem(
                     row,
-                    2,
+                    3,
                     _make_item(
                         user_text,
                         muted=user_muted,
@@ -798,7 +881,7 @@ class SSHCnfgrWindow(QMainWindow):
                 )
                 table.setItem(
                     row,
-                    3,
+                    4,
                     _make_item(
                         port_text,
                         muted=port_muted,
@@ -807,13 +890,13 @@ class SSHCnfgrWindow(QMainWindow):
                 )
                 table.setItem(
                     row,
-                    4,
+                    5,
                     _make_item(identity_text, muted=identity_muted, tooltip=identity_tip),
                 )
-                table.setItem(row, 5, _make_item(", ".join(host.groups)))
+                table.setItem(row, 6, _make_item(", ".join(host.groups)))
                 table.setItem(
                     row,
-                    6,
+                    7,
                     _make_item("Ja" if host.enabled else "Nein", muted=not host.enabled),
                 )
 
@@ -977,14 +1060,34 @@ class SSHCnfgrWindow(QMainWindow):
             )
 
         menu.addSeparator()
+        act_aliases = menu.addAction(f"Aliase generieren (USER@host) ({count})…")
+        act_aliases.triggered.connect(self.action_bulk_generate_aliases)
+        act_dns = menu.addAction(f"Per DNS anreichern (FQDN/IP) ({count})")
+        act_dns.triggered.connect(self.action_bulk_dns_enrich)
+
+        menu.addSeparator()
         act_delete = menu.addAction(f"Loeschen ({count})…")
         act_delete.triggered.connect(self.action_delete_host)
 
         menu.exec(self.hosts_table.viewport().mapToGlobal(pos))
 
+    def closeEvent(self, event: QCloseEvent) -> None:
+        if self._single_dns_worker is not None and self._single_dns_worker.isRunning():
+            try:
+                self._single_dns_worker.result_ready.disconnect(self._on_single_dns_enriched)
+            except RuntimeError:
+                pass
+        if self._bulk_dns_worker is not None and self._bulk_dns_worker.isRunning():
+            try:
+                self._bulk_dns_worker.result_ready.disconnect(self._on_bulk_dns_enriched)
+            except RuntimeError:
+                pass
+        super().closeEvent(event)
+
     def _load_host_into_form(self, host: HostEntry) -> None:
         self.in_host_name_alias.setText(host.name)
         self.in_host_hostname.setText(host.host_name)
+        self.in_host_ip.setText(host.ip or "")
         self.in_host_user.setText(host.user or "")
         self.in_host_port.setText(str(host.port) if host.port is not None else "")
         self._populate_identity_combo(self.in_host_identity, host.identity)
@@ -1047,6 +1150,7 @@ class SSHCnfgrWindow(QMainWindow):
 
         host.name = self.in_host_name_alias.text().strip()
         host.host_name = self.in_host_hostname.text().strip()
+        host.ip = self.in_host_ip.text().strip() or None
         host.user = self.in_host_user.text().strip() or None
 
         errors: list[str] = []
@@ -1094,6 +1198,7 @@ class SSHCnfgrWindow(QMainWindow):
         self.hosts_table.clearSelection()
         self.in_host_name_alias.clear()
         self.in_host_hostname.clear()
+        self.in_host_ip.clear()
         self.in_host_user.clear()
         self.in_host_port.clear()
         self._populate_identity_combo(self.in_host_identity, None)
@@ -1134,6 +1239,170 @@ class SSHCnfgrWindow(QMainWindow):
         self._refresh_all()
         self._load_host_into_form(candidate)
         self._set_status(f"Host gespeichert: {candidate.name}")
+
+    def action_generate_single_alias(self) -> None:
+        """Schlaegt fuer den aktuellen Host im Formular einen Alias USER@kurzname vor."""
+        existing = self.db.get_by_id(self.selected_host_id) if self.selected_host_id else None
+        probe = copy.deepcopy(existing) if existing is not None else HostEntry()
+        probe.host_name = self.in_host_hostname.text().strip()
+        probe.user = self.in_host_user.text().strip() or None
+        probe.groups = [
+            item.strip() for item in self.in_host_groups.text().split(",") if item.strip()
+        ]
+        if not probe.host_name:
+            self._set_status("Bitte zuerst HostName eintragen")
+            return
+
+        suggested = suggest_host_alias(probe, self.db)
+        self.in_host_name_alias.setText(suggested)
+        self._set_status(f"Alias-Vorschlag: {suggested} (zum Uebernehmen Speichern klicken)")
+
+    def action_enrich_single_host(self) -> None:
+        """Loest den HostName im Formular per DNS auf und ergaenzt FQDN & IP."""
+        if self._single_dns_worker is not None and self._single_dns_worker.isRunning():
+            return
+        host_name = self.in_host_hostname.text().strip()
+        if not host_name:
+            self._set_status("Bitte zuerst HostName eintragen")
+            return
+
+        self.btn_enrich_single.setEnabled(False)
+        self.btn_enrich_single.setText("DNS…")
+        self._set_status(f"DNS-Abfrage fuer '{host_name}'…")
+
+        worker = _SingleDnsEnrichWorker(host_name, parent=self)
+        worker.result_ready.connect(self._on_single_dns_enriched)
+        worker.finished.connect(worker.deleteLater)
+        self._single_dns_worker = worker
+        worker.start()
+
+    def _on_single_dns_enriched(self, fqdn: object, ip_addr: object) -> None:
+        self._single_dns_worker = None
+        self.btn_enrich_single.setEnabled(True)
+        self.btn_enrich_single.setText("DNS (FQDN/IP)")
+
+        fqdn_str = str(fqdn) if isinstance(fqdn, str) and fqdn else None
+        ip_str = str(ip_addr) if isinstance(ip_addr, str) and ip_addr else None
+
+        if not fqdn_str and not ip_str:
+            self._set_status("DNS-Aufloesung fehlgeschlagen (Host nicht erreichbar / unbekannt)")
+            return
+
+        parts: list[str] = []
+        if fqdn_str:
+            self.in_host_hostname.setText(fqdn_str)
+            parts.append(f"FQDN={fqdn_str}")
+        if ip_str:
+            self.in_host_ip.setText(ip_str)
+            parts.append(f"IP={ip_str}")
+        self._set_status(f"DNS ergaenzt: {', '.join(parts)} (zum Uebernehmen Speichern klicken)")
+
+    def action_bulk_generate_aliases(self, *, skip_confirm: bool = False) -> None:
+        """Benennt alle markierten Hosts nach dem Schema USER@kurzname (oder USER@ip) um."""
+        target_ids = set(self.selected_host_ids())
+        if not target_ids:
+            self._set_status("Keine Hosts markiert")
+            return
+
+        candidate_db, renames, errors = bulk_generate_aliases(self.db, target_ids)
+        if errors:
+            QMessageBox.warning(self, "Validierungsfehler", "\n".join(errors))
+            return
+        if not renames:
+            self._set_status("Alle markierten Hosts entsprechen bereits dem Schema USER@kurzname")
+            return
+
+        if not skip_confirm:
+            preview_lines = [f"{old}  →  {new}" for old, new in renames[:8]]
+            if len(renames) > 8:
+                preview_lines.append(f"… (+{len(renames) - 8} weitere)")
+            answer = QMessageBox.question(
+                self,
+                "Aliase generieren",
+                f"{len(renames)} Host(s) nach Schema USER@kurzname umbenennen?\n\n"
+                + "\n".join(preview_lines),
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                QMessageBox.StandardButton.Yes,
+            )
+            if answer != QMessageBox.StandardButton.Yes:
+                return
+
+        if not self._commit_db(candidate_db):
+            return
+
+        self._selected_host_ids = target_ids
+        self._refresh_all()
+        if len(target_ids) == 1:
+            host = self.db.get_by_id(next(iter(target_ids)))
+            if host is not None:
+                self._load_host_into_form(host)
+        self._set_status(f"{len(renames)} Host-Alias(e) generiert")
+
+    def action_bulk_dns_enrich(self) -> None:
+        """Startet parallele DNS-Anreicherung (FQDN + IP) fuer alle markierten Hosts."""
+        if self._bulk_dns_worker is not None and self._bulk_dns_worker.isRunning():
+            return
+        target_ids = set(self.selected_host_ids())
+        if not target_ids:
+            self._set_status("Keine Hosts markiert")
+            return
+
+        targets = [copy.deepcopy(h) for h in self.db.hosts if h.id in target_ids]
+        if not targets:
+            return
+
+        self.btn_bulk_dns_enrich.setEnabled(False)
+        self.btn_bulk_dns_enrich.setText("DNS laeuft…")
+        self._set_status(f"Reiche {len(targets)} Host(s) per DNS an (FQDN & IP)…")
+
+        worker = _BulkDnsEnrichWorker(targets, target_ids, parent=self)
+        worker.result_ready.connect(self._on_bulk_dns_enriched)
+        worker.finished.connect(worker.deleteLater)
+        self._bulk_dns_worker = worker
+        worker.start()
+
+    def _on_bulk_dns_enriched(self, target_ids: object, results: object) -> None:
+        self._bulk_dns_worker = None
+        self.btn_bulk_dns_enrich.setText("DNS anreichern")
+        self._update_bulk_controls()
+
+        if not isinstance(target_ids, set) or not isinstance(results, dict):
+            return
+        self.apply_bulk_dns_results(target_ids, results)
+
+    def apply_bulk_dns_results(
+        self,
+        target_ids: set[str],
+        results: dict[str, DnsEnrichResult],
+    ) -> None:
+        """Uebernimmt DNS-Anreicherungsergebnisse transaktional in DB & UI."""
+        candidate_db, updated, unresolved, errors = apply_dns_enrichment(
+            self.db,
+            target_ids,
+            results,
+        )
+        if errors:
+            QMessageBox.warning(self, "Validierungsfehler", "\n".join(errors))
+            return
+
+        if updated == 0:
+            self._set_status(
+                f"DNS-Anreicherung: keine Aenderungen ({unresolved} nicht aufloesbar)"
+            )
+            return
+
+        if not self._commit_db(candidate_db):
+            return
+
+        self._selected_host_ids = set(target_ids)
+        self._refresh_all()
+        if len(target_ids) == 1:
+            host = self.db.get_by_id(next(iter(target_ids)))
+            if host is not None:
+                self._load_host_into_form(host)
+        self._set_status(
+            f"DNS-Anreicherung: {updated} Host(s) aktualisiert ({unresolved} nicht aufloesbar)"
+        )
 
     def action_toggle_host_enabled(self) -> None:
         target_ids = set(self.selected_host_ids())

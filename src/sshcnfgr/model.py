@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import ipaddress
 from dataclasses import dataclass, field
 from uuid import uuid4
 
@@ -78,6 +79,7 @@ class HostEntry:
     name: str = ""
     enabled: bool = True
     host_name: str = ""
+    ip: str | None = None
     user: str | None = None
     port: int | None = None
     identity: str | None = None
@@ -91,17 +93,22 @@ class HostEntry:
 
         if not self.name:
             errors.append("name darf nicht leer sein")
-        if " " in self.name:
+        if any(ch.isspace() for ch in self.name):
             errors.append("name darf keine Leerzeichen enthalten")
         if not self.host_name:
             errors.append("host_name darf nicht leer sein")
+        if self.ip is not None:
+            try:
+                ipaddress.ip_address(self.ip)
+            except ValueError:
+                errors.append(f"ip ist keine gueltige IP-Adresse: {self.ip}")
         if self.port is not None and not (1 <= self.port <= 65535):
             errors.append("port muss zwischen 1 und 65535 liegen")
-        if self.identity is not None and " " in self.identity:
+        if self.identity is not None and any(ch.isspace() for ch in self.identity):
             errors.append("identity darf keine Leerzeichen enthalten")
         if self.identity_file is not None and not isinstance(self.identity_file, str):
             errors.append("identity_file muss ein String sein")
-        if any((not group) or (" " in group) for group in self.groups):
+        if any((not group) or any(ch.isspace() for ch in group) for group in self.groups):
             errors.append("groups duerfen keine leeren Werte oder Leerzeichen enthalten")
 
         return errors

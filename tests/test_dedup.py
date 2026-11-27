@@ -9,6 +9,7 @@ from sshcnfgr.dedup import (
     build_merged_host,
     default_conflict_choices,
     find_duplicate_groups,
+    resolve_hostnames_dns,
 )
 from sshcnfgr.model import HostDatabase, HostEntry, HostGroup, IdentityProfile
 
@@ -205,6 +206,74 @@ class DedupTests(unittest.TestCase):
 
         _, _, errors = apply_merge(db, plan)
         self.assertTrue(any("doppelt vorhanden" in err for err in errors))
+
+    def test_resolve_hostnames_dns_and_match_name_against_ip(self) -> None:
+        db = HostDatabase(
+            hosts=[
+                HostEntry(id="h1", name="web-dns", host_name="web01.intern", user="ubuntu"),
+                HostEntry(id="h2", name="web-ip", host_name="10.0.0.12", user="ubuntu"),
+                HostEntry(id="h3", name="web-dual", host_name="web01.example.com", user="ubuntu"),
+                HostEntry(id="h4", name="web-root", host_name="10.0.0.12", user="root"),
+                HostEntry(id="h5", name="ghost", host_name="ghost.invalid", user="ubuntu"),
+            ]
+        )
+
+        # Ohne DNS keine exakten Dubletten.
+        self.assertEqual(find_duplicate_groups(db), [])
+
+        fake_fwd = {
+            "web01.intern": {"10.0.0.12"},
+            "web01.example.com": {"10.0.0.12", "2001:0db8::12"},
+        }
+        fake_rev = {"10.0.0.12": "web01.intern."}
+
+        dns_map = resolve_hostnames_dns(
+            db.hosts,
+            forward_resolver=lambda name: fake_fwd.get(name, set()),
+            reverse_resolver=lambda ip: fake_rev.get(ip),
+        )
+        self.assertEqual(dns_map.resolved_count, 2)
+        self.assertEqual(dns_map.unresolved, ["ghost.invalid"])
+        self.assertEqual(dns_map.ptr_by_ip.get("10.0.0.12"), "web01.intern")
+
+        groups = find_duplicate_groups(db, dns_map=dns_map)
+        self.assertEqual(len(groups), 1)
+        group = groups[0]
+        self.assertEqual(group.match_source, "dns")
+        self.assertEqual(group.matched_ips, ["10.0.0.12"])
+        self.assertEqual(group.aliases, ["web-dns", "web-dual", "web-ip"])
+
+        # Selbst wenn der IP-Host Primary ist, wird ein sprechender Hostname bevorzugt.
+        conflicts = analyze_group_conflicts(group)
+        self.assertEqual([c.field for c in conflicts], ["host_name"])
+        defaults = default_conflict_choices(group, "h2", conflicts)
+        self.assertIn(defaults["host_name"], {"web01.intern", "web01.example.com"})
+
+    def test_ptr_hint_offered_as_hostname_option_for_ip_only_duplicates(self) -> None:
+        db = HostDatabase(
+            hosts=[
+                HostEntry(id="a", name="db-a", host_name="10.0.0.55", user="postgres"),
+                HostEntry(id="b", name="db-b", host_name="10.0.0.55", user="postgres"),
+            ]
+        )
+
+        dns_map = resolve_hostnames_dns(
+            db.hosts,
+            forward_resolver=lambda _name: set(),
+            reverse_resolver=lambda ip: "db01.intern" if ip == "10.0.0.55" else None,
+        )
+        groups = find_duplicate_groups(db, dns_map=dns_map)
+        self.assertEqual(len(groups), 1)
+        self.assertEqual(groups[0].match_source, "exact")
+        self.assertEqual(groups[0].ptr_names, ["db01.intern"])
+
+        conflicts = analyze_group_conflicts(groups[0])
+        self.assertEqual([c.field for c in conflicts], ["host_name"])
+        option_values = [opt.value for opt in conflicts[0].options]
+        self.assertEqual(option_values, ["10.0.0.55", "db01.intern"])
+        # Default bleibt bei der echten Host-Angabe, PTR ist bewusst waehlbare Option.
+        defaults = default_conflict_choices(groups[0], "a", conflicts)
+        self.assertEqual(defaults["host_name"], "10.0.0.55")
 
 
 if __name__ == "__main__":

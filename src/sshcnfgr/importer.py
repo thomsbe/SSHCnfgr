@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import ipaddress
 import re
 from pathlib import Path
 
@@ -55,7 +56,19 @@ def import_ssh_config(path: Path) -> tuple[HostDatabase, ImportReport]:
 
     for line_number, raw_line in enumerate(path.read_text(encoding="utf-8").splitlines(), start=1):
         line = raw_line.strip()
-        if not line or line.startswith("#"):
+        if not line:
+            continue
+        if line.startswith("#"):
+            # Strukturierter IP-Kommentar aus sshcnfgr-generierten Configs verlustfrei einlesen.
+            if current_hosts and line.lower().startswith("# ip:"):
+                candidate_ip = line.split(":", 1)[1].strip()
+                try:
+                    normalized_ip = str(ipaddress.ip_address(candidate_ip))
+                except ValueError:
+                    normalized_ip = None
+                if normalized_ip:
+                    for host in current_hosts:
+                        host.ip = normalized_ip
             continue
 
         parts = DIRECTIVE_SPLIT_RE.split(line, maxsplit=1)

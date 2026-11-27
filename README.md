@@ -4,7 +4,7 @@
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](https://github.com/thomsbe/SSHCnfgr/blob/main/LICENSE)
 [![Python 3.12+](https://img.shields.io/badge/Python-3.12%2B-3776AB.svg)](https://www.python.org/)
-[![Status: Beta](https://img.shields.io/badge/Status-0.2.0b3%20Beta-orange.svg)](https://pypi.org/project/sshcnfgr/)
+[![Version: 1.0.0](https://img.shields.io/badge/Version-1.0.0-brightgreen.svg)](https://pypi.org/project/sshcnfgr/)
 
 **SSHCnfgr** verwaltet deine OpenSSH-Hosts, Gruppen und Identities über eine einzige, saubere TOML-Datei (`~/.ssh/sshcnfgr.toml`) — per **Textual-TUI**, optionaler **Qt6-Desktop-GUI** (Wayland/X11/macOS/Windows) oder **Click-CLI**.
 
@@ -12,7 +12,8 @@
 
 - **Eine einzige Datei neben `~/.ssh/config`:** Alles liegt in `~/.ssh/sshcnfgr.toml` (auf Linux/macOS automatisch mit `0600`-Rechten, unter Windows in `%USERPROFILE%\.ssh\sshcnfgr.toml`) — ideal für den direkten Start per `uvx`.
 - **TOML als Source of Truth:** Deaktivierte Hosts bleiben in der Datenbank erhalten, landen aber nicht in der generierten OpenSSH-Config (`~/.ssh/config.generated`, ebenfalls `0600`).
-- **Dubletten finden & zusammenführen:** Erkennt Hosts mit gleichem Ziel (`HostName` + effektiver `Port` + effektiver `User`), zeigt Feld-Konflikte übersichtlich an und führt Einträge interaktiv zusammen (übrige Dubletten wahlweise deaktivieren oder löschen).
+- **Dubletten finden & zusammenführen (inkl. optionalem DNS-Check):** Erkennt Hosts mit gleichem Ziel (`HostName` + effektiver `Port` + effektiver `User`) sowie auf Knopfdruck (**„Per DNS prüfen“**) auch versteckte Dubletten zwischen Hostname und IP (inkl. PTR-Hinweis), zeigt Feld-Konflikte übersichtlich an und führt Einträge interaktiv zusammen.
+- **DNS-Anreicherung (FQDN + IP) & Alias-Generator (`USER@kurzname`):** Ergänzt auf Knopfdruck (einzeln oder als Sammel-Aktion) Kurznamen um Domain-FQDN + IP (und prüft reine IPs per FCrDNS), speichert FQDN und IP sauber gemeinsam in `sshcnfgr.toml` sowie als `# IP:`-Kommentar (verlustfreier Roundtrip mit `import`/`generate`) und benennt Einträge per Klick konsistent nach `USER@kurzname` um — ideal für die VS-Code-Remote-SSH-Liste.
 - **Gruppen-Reihenfolge (Drag & Drop) & `Match originalhost`-Regeln:** Sortiere Gruppen in der Qt6-GUI frei per Drag & Drop — `config.generated` (und damit auch **VS Code Remote-SSH**) listet Hosts nach ihrer ersten Gruppe in genau dieser Reihenfolge. Gruppen-Defaults (`Identity`, `User`, `Port`, `ProxyJump`, `IdentitiesOnly`, …) werden als saubere OpenSSH-`Match originalhost`-Blöcke erzeugt.
 - **Mehrfachauswahl & Sammel-Aktionen (Qt6-GUI):** Mehrere Hosts per `Ctrl+Klick`, `Shift+Klick` oder `Ctrl+A` (auch nach Live-Suche!) markieren und per Sammel-Aktionen-Leiste oder Rechtsklick in einem Rutsch einer Gruppe zuweisen, als 1. Gruppe setzen, aktivieren/deaktivieren oder löschen.
 - **TUI, Qt6-GUI & CLI:** Im Terminal mit Textual, auf dem Desktop optional mit PySide6/Qt6 (Live-Suche, Gruppen-/Identity-Tabs, `extra_options`-Editor, Config-Vorschau) oder skriptbar über die CLI.
@@ -22,29 +23,27 @@
 
 ## Schnellstart mit `uv` / `uvx`
 
-> **Hinweis zur Beta-Version (`0.2.0b3`):** Da es sich um eine Vorabversion handelt, benötigt `uvx` / `uv tool install` aktuell das Flag `--prerelease=allow`. Ab dem regulären `0.2.0`-Release entfällt dieses Flag.
-
 ### Ohne Installation direkt ausführen (`uvx`)
 
 ```bash
 # Textual-TUI direkt starten (legt ~/.ssh/sshcnfgr.toml bei Bedarf an)
-uvx --prerelease=allow sshcnfgr
+uvx sshcnfgr
 
 # Optionale Qt6 Desktop-GUI starten (Wayland / X11 / macOS / Windows)
-uvx --prerelease=allow --from "sshcnfgr[qt]" sshcnfgr gui
+uvx --from "sshcnfgr[qt]" sshcnfgr gui
 
 # Bestehende ~/.ssh/config importieren
-uvx --prerelease=allow sshcnfgr import --source ~/.ssh/config
+uvx sshcnfgr import --source ~/.ssh/config
 ```
 
 ### Dauerhaft als CLI-Tool installieren (`uv tool install`)
 
 ```bash
 # Terminal-Version (TUI + CLI)
-uv tool install --prerelease=allow sshcnfgr
+uv tool install sshcnfgr
 
 # Inklusive Qt6 Desktop-GUI
-uv tool install --prerelease=allow "sshcnfgr[qt]"
+uv tool install "sshcnfgr[qt]"
 
 # Danach direkt nutzbar:
 sshcnfgr            # startet die TUI
@@ -63,8 +62,7 @@ Für Linux-Desktop-Nutzer (z. B. Linux Mint, Ubuntu, Debian, Fedora) steht bei j
 1. `SSHCnfgr-*-x86_64.AppImage` von den [GitHub Releases](https://github.com/thomsbe/SSHCnfgr/releases) herunterladen.
 2. In **[Gear Lever](https://mijorus.it/projects/gearlever/)** (per Flatpak / Software-Verwaltung) öffnen und **„In Anwendungsmenü verschieben“** (*Move to the app menu*) klicken.
 3. Fertig: Icon, Startmenü-Eintrag und Wayland/X11-Desktop-Integration werden automatisch eingerichtet.
-4. **Auto-Update inklusive:** Im AppImage sind bereits `gh-releases-zsync`-Update-Metadaten eingebettet (`gh-releases-zsync|thomsbe|SSHCnfgr|latest|SSHCnfgr-*-x86_64.AppImage.zsync`), und jedes Release liefert automatisch die passende `.AppImage.zsync`-Datei mit. Gear Lever erkennt Updates damit von selbst und lädt per Delta-Update nur die geänderten Blöcke nach.
-   *(Hinweis: Der Standard-Kanal `latest` folgt regulären Releases — bei als Pre-Release markierten Betas in Gear Lever ggf. Pre-Releases aktivieren.)*
+4. **Auto-Update inklusive:** Im AppImage sind bereits `gh-releases-zsync`-Update-Metadaten eingebettet (`gh-releases-zsync|thomsbe|SSHCnfgr|latest|SSHCnfgr-*-x86_64.AppImage.zsync`), und jedes Release liefert automatisch die passende `.AppImage.zsync`-Datei mit. Gear Lever (und Topgrade) erkennt Updates damit von selbst und lädt per Delta-Update nur die geänderten Blöcke nach.
 
 #### Direkt ohne Gear Lever starten
 
@@ -172,13 +170,13 @@ Weitere Dokumente: [CHANGELOG.md](CHANGELOG.md), [SECURITY.md](SECURITY.md), [CO
 
 ### Quickstart
 ```bash
-# Run directly with uvx (during 0.2.0b3 beta, pass --prerelease=allow)
-uvx --prerelease=allow sshcnfgr
-uvx --prerelease=allow --from "sshcnfgr[qt]" sshcnfgr gui
+# Run directly with uvx
+uvx sshcnfgr
+uvx --from "sshcnfgr[qt]" sshcnfgr gui
 
 # Or install globally as a tool
-uv tool install --prerelease=allow sshcnfgr
-uv tool install --prerelease=allow "sshcnfgr[qt]"
+uv tool install sshcnfgr
+uv tool install "sshcnfgr[qt]"
 
 # Import existing OpenSSH config & generate
 sshcnfgr import --source ~/.ssh/config

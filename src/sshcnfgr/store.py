@@ -46,6 +46,8 @@ def _host_to_dict(host: HostEntry) -> dict[str, object]:
     }
 
     # tomli-w serialisiert kein None, daher optionale Felder nur bei Wert schreiben.
+    if host.ip is not None:
+        payload["ip"] = host.ip
     if host.user is not None:
         payload["user"] = host.user
     if host.port is not None:
@@ -93,6 +95,7 @@ def _host_from_dict(data: dict[str, object]) -> HostEntry:
         name=str(data.get("name", "")),
         enabled=bool(data.get("enabled", True)),
         host_name=str(data.get("host_name", "")),
+        ip=str(data["ip"]) if data.get("ip") is not None else None,
         user=str(data["user"]) if data.get("user") is not None else None,
         port=int(data["port"]) if data.get("port") is not None else None,
         identity=str(data["identity"]) if data.get("identity") is not None else None,

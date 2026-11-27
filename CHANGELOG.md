@@ -5,6 +5,17 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html) (with PEP 440 pre-release tags).
 
+## [1.0.0] - 2026-11-27
+
+First stable release (`Development Status :: 5 - Production/Stable`, installable directly via `uvx sshcnfgr` / `uv tool install sshcnfgr` without `--prerelease=allow`).
+
+### Added
+- **On-demand DNS duplicate detection (Name ↔ IP):** New **„Per DNS prüfen“** button (and `Ctrl+R` in TUI) in the duplicate review dialog/screen resolves hostnames in parallel (Forward DNS `Name → IP` + Reverse DNS `PTR` hints for bare IPs) without blocking the UI.
+- **Union-Find IP grouping & smart HostName defaults:** Matches entries where one uses a hostname and another uses its IP (including dual-stack IPv4/IPv6), tags matches clearly as `Exakt` vs. `DNS (<ip>)`, shows resolved IPs/PTRs per candidate, defaults `HostName` conflict dropdowns to human-readable hostnames over bare IPs, and automatically preserves discarded bare IPs in `host.ip` during merge.
+- **Structured `ip` field & lossless `# IP:` config roundtrip:** Hosts can now store an optional informational `ip` alongside an FQDN `host_name` in `~/.ssh/sshcnfgr.toml`. `config.generated` emits `  # IP: <ip>` directly beneath `HostName` (without breaking OpenSSH or creating duplicate VS Code entries), and `sshcnfgr import` reads `# IP:` comments back into `host.ip`.
+- **On-demand DNS FQDN/IP enrichment (Qt6 GUI, single & bulk):** Expand short hostnames (e.g. `sdvdmg-mongodb` → `sdvdmg-mongodb.slub-dresden.de` + IPv4), upgrade bare IPs via Forward-Confirmed Reverse DNS (FCrDNS) while retaining the IP, or fill missing IPs on existing FQDNs without overwriting explicit CNAMEs.
+- **VS-Code-friendly Alias Generator (`USER@kurzname`):** Single-host **„Name generieren“** button and bulk **„Aliase generieren“** action (with confirmation preview) rename host aliases cleanly to `USER@kurzname` (or `USER@ip` / `kurzname` fallback, with automatic `-2`/`-3` collision suffixes).
+
 ## [0.2.0b3] - 2026-11-26
 
 ### Added

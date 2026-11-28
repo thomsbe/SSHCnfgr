@@ -47,7 +47,7 @@ def tui_command() -> None:
     run_tui()
 
 
-@cli.command("gui", help="Starte die optionale Qt6 Desktop-GUI (Wayland/X11)")
+@cli.command("gui", help="Starte die optionale Qt6 Desktop-GUI (Windows/macOS/Linux)")
 def gui_command() -> None:
     # Lazy import, damit PySide6 nur bei installiertem [qt]-Extra geladen wird.
     try:

@@ -21,7 +21,7 @@ def _read_ui_table(path: Path) -> dict[str, object] | None:
     if not path.exists():
         return None
     try:
-        raw = tomllib.loads(path.read_text(encoding="utf-8"))
+        raw = tomllib.loads(path.read_text(encoding="utf-8-sig"))
     except (OSError, tomllib.TOMLDecodeError):
         return None
     ui_data = raw.get("ui")
@@ -70,7 +70,7 @@ def save_ui_theme_name(theme_name: str, path: Path | None = None) -> None:
     payload: dict[str, object] = {}
     if target.exists():
         try:
-            loaded = tomllib.loads(target.read_text(encoding="utf-8"))
+            loaded = tomllib.loads(target.read_text(encoding="utf-8-sig"))
             if isinstance(loaded, dict):
                 payload = loaded
         except (OSError, tomllib.TOMLDecodeError):

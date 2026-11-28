@@ -41,6 +41,14 @@ def _unique_name(candidate: str, seen: set[str]) -> tuple[str, bool]:
     return f"{candidate}-{index}", True
 
 
+def _unquote_ssh_value(value: str) -> str:
+    """Entfernt umschliessende doppelte Anfuehrungszeichen aus OpenSSH-Pfadwerten."""
+    cleaned = value.strip()
+    if len(cleaned) >= 2 and cleaned[0] == '"' and cleaned[-1] == '"':
+        return cleaned[1:-1]
+    return cleaned
+
+
 def import_ssh_config(path: Path) -> tuple[HostDatabase, ImportReport]:
     report = ImportReport()
     if not path.exists():
@@ -54,7 +62,10 @@ def import_ssh_config(path: Path) -> tuple[HostDatabase, ImportReport]:
     in_skipped_host = False
     seen_host_block = False
 
-    for line_number, raw_line in enumerate(path.read_text(encoding="utf-8").splitlines(), start=1):
+    # utf-8-sig entfernt eine optionale UTF-8-BOM (haeufig nach Bearbeitung unter Windows).
+    for line_number, raw_line in enumerate(
+        path.read_text(encoding="utf-8-sig").splitlines(), start=1
+    ):
         line = raw_line.strip()
         if not line:
             continue
@@ -127,7 +138,9 @@ def import_ssh_config(path: Path) -> tuple[HostDatabase, ImportReport]:
             continue
 
         if in_host_wildcard:
-            global_options[key] = value
+            global_options[key] = (
+                _unquote_ssh_value(value) if key_lower == "identityfile" else value
+            )
             continue
 
         if in_skipped_host:
@@ -139,7 +152,9 @@ def import_ssh_config(path: Path) -> tuple[HostDatabase, ImportReport]:
         if not seen_host_block:
             # Direktiven vor dem ersten Host-Block (inkl. Include) gelten in
             # OpenSSH als globale Defaults und gehoeren nicht an einen Host.
-            global_options[key] = value
+            global_options[key] = (
+                _unquote_ssh_value(value) if key_lower == "identityfile" else value
+            )
             continue
 
         for host in current_hosts:
@@ -156,7 +171,7 @@ def import_ssh_config(path: Path) -> tuple[HostDatabase, ImportReport]:
                         f"Zeile {line_number}: Port '{value}' ist ungueltig fuer Host '{host.name}'"
                     )
             elif field_name == "identity_file":
-                host.identity_file = value
+                host.identity_file = _unquote_ssh_value(value)
             else:
                 host.extra_options[key] = value
 

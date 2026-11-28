@@ -4,7 +4,7 @@
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](https://github.com/thomsbe/SSHCnfgr/blob/main/LICENSE)
 [![Python 3.12+](https://img.shields.io/badge/Python-3.12%2B-3776AB.svg)](https://www.python.org/)
-[![Version: 1.0.0](https://img.shields.io/badge/Version-1.0.0-brightgreen.svg)](https://pypi.org/project/sshcnfgr/)
+[![Version: 1.1.0](https://img.shields.io/badge/Version-1.1.0-brightgreen.svg)](https://pypi.org/project/sshcnfgr/)
 
 **SSHCnfgr** verwaltet deine OpenSSH-Hosts, Gruppen und Identities über eine einzige, saubere TOML-Datei (`~/.ssh/sshcnfgr.toml`) — per **Textual-TUI**, optionaler **Qt6-Desktop-GUI** (Wayland/X11/macOS/Windows) oder **Click-CLI**.
 
@@ -74,6 +74,20 @@ chmod +x SSHCnfgr-*-x86_64.AppImage
 ```
 
 *(Falls auf einem System kein `libfuse2` installiert ist, funktioniert der Start jederzeit mit `APPIMAGE_EXTRACT_AND_RUN=1 ./SSHCnfgr-*-x86_64.AppImage` oder `--appimage-extract-and-run`.)*
+
+### Windows-Installer & Winget (ohne Python / ohne `uv`)
+
+Für Windows (x64) baut der GitHub-Workflow bei jedem [GitHub Release](https://github.com/thomsbe/SSHCnfgr/releases) einen fertigen **Inno-Setup-Installer** (`SSHCnfgr-*-x64-setup.exe`) inklusive gebündelter Qt6-GUI (`SSHCnfgr.exe`, ohne Konsolenfenster) und CLI/TUI (`sshcnfgr` über `PATH`):
+
+1. `SSHCnfgr-*-x64-setup.exe` von den [GitHub Releases](https://github.com/thomsbe/SSHCnfgr/releases) herunterladen und ausführen (Standard: Benutzer-Installation ohne Admin-Rechte unter `%LOCALAPPDATA%\Programs\SSHCnfgr`, optional systemweit).
+2. Startmenü-Eintrag **SSHCnfgr** öffnet direkt die Qt6-GUI; im Terminal stehen `sshcnfgr` (TUI), `sshcnfgr gui` und alle CLI-Befehle bereit.
+3. **Winget (nach Erstaufnahme in `microsoft/winget-pkgs`):**
+   ```powershell
+   winget install ThomsBe.SSHCnfgr
+   winget upgrade ThomsBe.SSHCnfgr
+   ```
+
+Details zum lokalen Windows-Build (`packaging/windows/build_windows.ps1`) und zur Winget-Einreichung stehen in [doc/windows-release.md](doc/windows-release.md).
 
 ---
 
@@ -184,5 +198,7 @@ sshcnfgr generate
 ```
 
 On Linux desktops (without Python or `uv`), download `SSHCnfgr-*-x86_64.AppImage` from [GitHub Releases](https://github.com/thomsbe/SSHCnfgr/releases). Open it in **Gear Lever** for one-click app-menu integration and automatic delta updates (`gh-releases-zsync` metadata and `.zsync` files are included), or make it executable (`chmod +x`) and run it directly (opens the Qt6 GUI by default; CLI/TUI arguments also work).
+
+On Windows (x64, without Python or `uv`), download `SSHCnfgr-*-x64-setup.exe` from [GitHub Releases](https://github.com/thomsbe/SSHCnfgr/releases) for a standalone Qt6 GUI (`SSHCnfgr.exe`) and CLI/TUI (`sshcnfgr` on `PATH`) installation (or install/update via `winget install ThomsBe.SSHCnfgr` once published to `microsoft/winget-pkgs`). See [doc/windows-release.md](doc/windows-release.md) for local build and Winget release steps.
 
 Licensed under the [MIT License](LICENSE). See [SECURITY.md](SECURITY.md) for security reporting and [CONTRIBUTING.md](CONTRIBUTING.md) for development details.

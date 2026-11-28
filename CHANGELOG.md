@@ -5,6 +5,21 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html) (with PEP 440 pre-release tags).
 
+## [1.1.0] - 2026-11-28
+
+Full Windows desktop support, standalone Windows installer (Inno Setup), and Winget packaging (`ThomsBe.SSHCnfgr`).
+
+### Added
+- **Windows x64 installer (`SSHCnfgr-*-x64-setup.exe`):** Automated GitHub Actions workflow (`windows-installer.yml` on `windows-latest`) bundling Python, `sshcnfgr`, and `PySide6-Essentials` via PyInstaller (`--onedir` with shared `_internal`: `SSHCnfgr.exe` GUI without console window + `sshcnfgr-cli.exe` / `bin/sshcnfgr.cmd` CLI/TUI on `PATH`) and Inno Setup 6 (per-user install without admin rights or optional machine-wide install, Start Menu/Desktop shortcuts, clean uninstaller, and automated silent install/uninstall smoke test in CI).
+- **Automatic Windows `.ico`/`.png` icon generation:** `packaging/windows/generate_icons.py` renders multi-resolution `.ico` (16–256 px) and 256×256 `.png` icons directly from `src/sshcnfgr/assets/sshcnfgr.svg` via PySide6 without external imaging dependencies.
+- **Winget manifest generator & optional auto-publish (`ThomsBe.SSHCnfgr`):** Added `packaging/winget/generate_manifest.py` (schema-validated against `winget validate`), release workflow artifacts, opt-in `publish-winget` release job, and documentation in `doc/windows-release.md`.
+- **Windows Qt6 GUI CI coverage:** `.github/workflows/ci.yml` now installs `--extra qt` and executes the Qt6 GUI test suite across `windows-latest`, `macos-latest`, and `ubuntu-latest` (Python 3.12/3.13).
+
+### Fixed
+- **OpenSSH quoting for `IdentityFile` paths with spaces:** `generator.py` now quotes `IdentityFile` values containing whitespace (e.g. Windows user profiles like `C:\Users\Max Mustermann\.ssh\...`) in host, `Match originalhost`, and `Host *` blocks; `importer.py` strips matching outer quotes on import for lossless roundtrips.
+- **UTF-8 BOM & CRLF tolerance:** `importer.py`, `store.py`, and `settings.py` now read files using `utf-8-sig` so configs or TOML files edited in Windows editors/PowerShell with a BOM parse cleanly.
+- **Qt6 GUI Windows polish & `Ctrl+C` handling:** `gui/__init__.py` sets the Windows `AppUserModelID` (`de.tbaer.sshcnfgr`) for taskbar icon grouping, prefers `.ico` on Windows, brings the window to the foreground on startup (`raise_()` / `activateWindow()`), and installs a `SIGINT` handler with a 250 ms `QTimer` so `Ctrl+C` cleanly terminates `sshcnfgr gui` from terminals.
+
 ## [1.0.0] - 2026-11-27
 
 First stable release (`Development Status :: 5 - Production/Stable`, installable directly via `uvx sshcnfgr` / `uv tool install sshcnfgr` without `--prerelease=allow`).

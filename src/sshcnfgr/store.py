@@ -148,7 +148,7 @@ def load_database(path: Path | None = None) -> HostDatabase:
         else:
             return HostDatabase()
 
-    raw = tomllib.loads(target.read_text(encoding="utf-8"))
+    raw = tomllib.loads(target.read_text(encoding="utf-8-sig"))
     group_items = raw.get("groups", [])
     identity_items = raw.get("identities", [])
     global_options_raw = raw.get("global_options", {})
@@ -203,7 +203,7 @@ def _read_existing_ui(path: Path) -> dict[str, str | bool]:
     if not path.exists():
         return {}
     try:
-        raw = tomllib.loads(path.read_text(encoding="utf-8"))
+        raw = tomllib.loads(path.read_text(encoding="utf-8-sig"))
     except (OSError, tomllib.TOMLDecodeError):
         return {}
     ui_raw = raw.get("ui", {})

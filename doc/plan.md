@@ -229,6 +229,19 @@ Verifikation:
 - Echte ~/.ssh/config parst read-only ohne Fehler (28 Hosts, 0 Warnungen, valide)
 - `uv run sshcnfgr --help` und `generate --output` in neues Verzeichnis erfolgreich
 
+### 8.2 Windows-Kompatibilitaet, Installer & Winget (erledigt 2026-11-28)
+
+- Windows-Kompatibilitaet abgesichert:
+  - `generator.py` quotiert `IdentityFile`-Pfade mit Leerzeichen (z. B. Windows-Benutzerprofile); `importer.py` entfernt Anfuehrungszeichen beim Import verlustfrei.
+  - `importer.py`, `store.py` und `settings.py` lesen mit `utf-8-sig` (UTF-8-BOM-Toleranz).
+  - `gui/__init__.py` setzt Windows `AppUserModelID` (`de.tbaer.sshcnfgr`) und bevorzugt `.ico` unter Windows.
+  - `.github/workflows/ci.yml` fuehrt Qt6-GUI-Tests (Python 3.12/3.13) nun auch auf `windows-latest` aus.
+- Windows-Installer (Option A) & Winget-Vorbereitung (Option C):
+  - `packaging/windows/`: `generate_icons.py` (SVG -> PNG + Multi-Res-ICO via PySide6), Multi-EXE-Spec (`SSHCnfgr.exe` GUI + `sshcnfgr-cli.exe` CLI + `bin/sshcnfgr.cmd` Wrapper), Inno-Setup-Skript `sshcnfgr.iss` und `build_windows.ps1`.
+  - `packaging/winget/generate_manifest.py`: erzeugt schema-validierte Winget-1.6.0-Manifeste fuer `ThomsBe.SSHCnfgr`.
+  - `.github/workflows/windows-installer.yml`: automatischer Windows-Setup-Build, Silent-Install/Uninstall-Smoke-Test, Release-Upload und opt-in `publish-winget`-Job.
+  - Dokumentation in `doc/windows-release.md` und `README.md` ergaenzt.
+
 ## 9. Offene Punkte (fachlich)
 
 ### Hoch

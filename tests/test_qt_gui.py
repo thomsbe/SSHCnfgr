@@ -427,6 +427,35 @@ class QtGuiTests(unittest.TestCase):
                 finally:
                     window.close()
 
+    def test_app_icon_and_windows_app_id_helper(self) -> None:
+        import signal
+
+        from PySide6.QtGui import QIcon
+
+        from sshcnfgr.gui import (
+            _configure_windows_app_id,
+            _icon_path,
+            _install_sigint_handler,
+        )
+
+        _configure_windows_app_id()
+        icon_file = _icon_path()
+        self.assertTrue(icon_file.exists())
+        icon = QIcon(str(icon_file))
+        self.assertFalse(icon.isNull())
+        self.assertFalse(icon.pixmap(64, 64).isNull())
+
+        previous_handler = signal.getsignal(signal.SIGINT)
+        timer = _install_sigint_handler(self._app)
+        try:
+            self.assertIsNotNone(timer)
+            assert timer is not None
+            self.assertTrue(timer.isActive())
+        finally:
+            if timer is not None:
+                timer.stop()
+            signal.signal(signal.SIGINT, previous_handler)
+
 
 if __name__ == "__main__":
     unittest.main()

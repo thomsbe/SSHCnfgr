@@ -8,6 +8,18 @@ from .paths import GENERATED_CONFIG_PATH, SSH_DIR, ensure_private_dir, set_priva
 from .store import create_backup
 
 
+def _format_ssh_path(value: str) -> str:
+    """Quotiert OpenSSH-Pfadwerte mit Leerzeichen (z. B. Windows-Benutzerprofile)."""
+    cleaned = value.strip()
+    if not cleaned:
+        return cleaned
+    if len(cleaned) >= 2 and cleaned[0] == '"' and cleaned[-1] == '"':
+        return cleaned
+    if any(ch.isspace() for ch in cleaned):
+        return f'"{cleaned}"'
+    return cleaned
+
+
 def _resolve_direct_host_identity_file(host: HostEntry, db: HostDatabase) -> str | None:
     """Loest nur host-eigene Identity-Angaben auf (ohne Gruppen-/Global-Defaults)."""
     if host.identity_file:
@@ -53,7 +65,7 @@ def render_host_block(
     # Der globale IdentityFile-Default wird schon im Host-*-Block ausgegeben
     # und muss nicht in jeden Host-Block wiederholt werden.
     if resolved_identity_file and resolved_identity_file != global_identity_file:
-        lines.append(f"  IdentityFile {resolved_identity_file}")
+        lines.append(f"  IdentityFile {_format_ssh_path(resolved_identity_file)}")
 
     for key, value in sorted(host.extra_options.items(), key=lambda item: item[0].lower()):
         lines.append(f"  {key} {value}")
@@ -79,7 +91,7 @@ def render_group_match_block(
     global_identity_file = get_option_ci(db.global_options, "IdentityFile")
     group_identity_file = _resolve_group_identity_file(group, db)
     if group_identity_file and group_identity_file != global_identity_file:
-        option_lines.append(f"  IdentityFile {group_identity_file}")
+        option_lines.append(f"  IdentityFile {_format_ssh_path(group_identity_file)}")
 
     for key, value in sorted(group.extra_options.items(), key=lambda item: item[0].lower()):
         option_lines.append(f"  {key} {value}")
@@ -167,7 +179,8 @@ def generate_config(
     if wildcard_options:
         global_lines = ["Host *"]
         for key, value in wildcard_options:
-            global_lines.append(f"  {key} {value}")
+            formatted = _format_ssh_path(value) if key.lower() == "identityfile" else value
+            global_lines.append(f"  {key} {formatted}")
         blocks.append("\n".join(global_lines))
 
     return "\n\n".join(["\n".join(header).rstrip(), *blocks]).strip() + "\n"

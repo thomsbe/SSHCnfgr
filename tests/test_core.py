@@ -165,6 +165,33 @@ class ImporterTests(unittest.TestCase):
         self.assertEqual(db.global_options.get("IdentityFile"), "~/.ssh/id_default")
         self.assertTrue(any("Match-Block" in w for w in report.warnings))
 
+    def test_import_handles_utf8_bom_crlf_and_quoted_identity_file(self) -> None:
+        from sshcnfgr.importer import import_ssh_config
+
+        sample = (
+            "Host win-srv\r\n"
+            "  HostName 10.0.0.50\r\n"
+            '  IdentityFile "C:\\Users\\Max Mustermann\\.ssh\\id_ed25519"\r\n'
+            "\r\n"
+            "Host *\r\n"
+            '  IdentityFile "C:\\Users\\Max Mustermann\\.ssh\\id_default"\r\n'
+        )
+
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            cfg = Path(tmp_dir) / "config"
+            cfg.write_text(sample, encoding="utf-8-sig")
+            db, report = import_ssh_config(cfg)
+
+        self.assertEqual(len(db.hosts), 1)
+        self.assertEqual(report.warnings, [])
+        host = db.hosts[0]
+        self.assertEqual(host.name, "win-srv")
+        self.assertEqual(host.identity_file, r"C:\Users\Max Mustermann\.ssh\id_ed25519")
+        self.assertEqual(
+            db.global_options.get("IdentityFile"),
+            r"C:\Users\Max Mustermann\.ssh\id_default",
+        )
+
 
 @unittest.skipUnless(HAS_TOMLI_W, "tomli_w nicht im aktuellen Python-Environment installiert")
 class GeneratorAndStoreTests(unittest.TestCase):
@@ -425,6 +452,59 @@ class GeneratorAndStoreTests(unittest.TestCase):
         )
         self.assertEqual(merged.host_name, "sdvdmg-mongodb.slub-dresden.de")
         self.assertEqual(merged.ip, "10.20.30.40")
+
+    def test_generator_quotes_identity_file_paths_with_spaces_and_roundtrips(self) -> None:
+        from sshcnfgr.generator import generate_config
+        from sshcnfgr.importer import import_ssh_config
+        from sshcnfgr.store import load_database
+
+        win_host_key = r"C:\Users\Max Mustermann\.ssh\id_host"
+        win_group_key = r"C:\Users\Max Mustermann\.ssh\id_group"
+        win_global_key = r"C:\Users\Max Mustermann\.ssh\id_global"
+
+        db = HostDatabase(
+            groups=[HostGroup(name="prod", identity="gkey")],
+            identities=[IdentityProfile(name="gkey", identity_file=win_group_key)],
+            global_options={"IdentityFile": win_global_key},
+            hosts=[
+                HostEntry(
+                    id="h1",
+                    name="win-direct",
+                    host_name="10.0.0.10",
+                    identity_file=win_host_key,
+                ),
+                HostEntry(
+                    id="h2",
+                    name="win-group",
+                    host_name="10.0.0.11",
+                    groups=["prod"],
+                ),
+            ],
+        )
+
+        rendered = generate_config(db, include_timestamp=False)
+        self.assertIn(f'  IdentityFile "{win_host_key}"', rendered)
+        self.assertIn(f'  IdentityFile "{win_group_key}"', rendered)
+        self.assertIn(f'  IdentityFile "{win_global_key}"', rendered)
+
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            cfg = Path(tmp_dir) / "config.generated"
+            cfg.write_text(rendered, encoding="utf-8")
+            imported, _report = import_ssh_config(cfg)
+
+            direct = next((h for h in imported.hosts if h.name == "win-direct"), None)
+            assert direct is not None
+            self.assertEqual(direct.identity_file, win_host_key)
+            self.assertEqual(imported.global_options.get("IdentityFile"), win_global_key)
+
+            # TOML mit UTF-8-BOM (z. B. nach Bearbeitung unter Windows) muss ladbar sein.
+            bom_toml = Path(tmp_dir) / "sshcnfgr.toml"
+            bom_toml.write_text(
+                '[[hosts]]\nid = "x1"\nname = "bom-host"\nhost_name = "10.0.0.99"\n',
+                encoding="utf-8-sig",
+            )
+            loaded_bom = load_database(bom_toml)
+            self.assertEqual([h.name for h in loaded_bom.hosts], ["bom-host"])
 
 
 if __name__ == "__main__":

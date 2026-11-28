@@ -29,7 +29,18 @@ jobs:
       - name: Set up Python ${{ matrix.python-version }}
         run: uv python install ${{ matrix.python-version }}
 
-      - name: Sync dependencies
+      - name: Install Qt6 offscreen libraries (Linux)
+        if: matrix.os == 'ubuntu-latest' && matrix.python-version != '3.14'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libegl1 libgl1 libxkbcommon0
+
+      - name: Sync dependencies (with Qt extra on Python 3.12/3.13)
+        if: matrix.python-version != '3.14'
+        run: uv sync --python ${{ matrix.python-version }} --extra dev --extra qt
+
+      - name: Sync dependencies (core + dev on Python 3.14)
+        if: matrix.python-version == '3.14'
         run: uv sync --python ${{ matrix.python-version }} --extra dev
 
       - name: Lint with ruff
@@ -37,6 +48,8 @@ jobs:
         run: uv run ruff check .
 
       - name: Run test suite
+        env:
+          QT_QPA_PLATFORM: offscreen
         run: uv run pytest -v
 
       - name: CLI smoke test

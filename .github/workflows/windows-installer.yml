@@ -1,0 +1,110 @@
+name: Build Windows Installer
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: "Optional existing GitHub release tag to attach built assets to"
+        required: false
+        default: ""
+
+permissions:
+  contents: write
+
+jobs:
+  build-windows-installer:
+    name: Build x64 Windows Installer (windows-latest)
+    runs-on: windows-latest
+    outputs:
+      version: ${{ steps.meta.outputs.version }}
+      sha256: ${{ steps.meta.outputs.sha256 }}
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+
+      - name: Set up Python 3.12
+        run: uv python install 3.12
+
+      - name: Sync dependencies with Qt extra
+        run: uv sync --python 3.12 --extra qt
+
+      - name: Build PyInstaller bundle and Inno Setup installer
+        shell: pwsh
+        run: ./packaging/windows/build_windows.ps1
+
+      - name: Collect release metadata and generate Winget manifest
+        id: meta
+        shell: pwsh
+        run: |
+          $version = (uv run --no-sync python -c "from sshcnfgr import __version__; print(__version__)").Trim()
+          $setup = Get-ChildItem dist/SSHCnfgr-*-x64-setup.exe | Select-Object -First 1
+          $hash = (Get-FileHash -Algorithm SHA256 -Path $setup.FullName).Hash.ToUpperInvariant()
+          "version=$version" >> $env:GITHUB_OUTPUT
+          "sha256=$hash" >> $env:GITHUB_OUTPUT
+          uv run --no-sync python packaging/winget/generate_manifest.py `
+            --version $version `
+            --sha256 $hash `
+            --out-dir "dist/winget/manifests/t/ThomsBe/SSHCnfgr/$version"
+
+      - name: Smoke test silent install and uninstall
+        shell: pwsh
+        run: |
+          $setup = (Get-ChildItem dist/SSHCnfgr-*-x64-setup.exe | Select-Object -First 1).FullName
+          $installDir = Join-Path $env:RUNNER_TEMP "sshcnfgr-smoke-install"
+          Start-Process -FilePath $setup `
+            -ArgumentList "/VERYSILENT", "/SUPPRESSMSGBOXES", "/NORESTART", "/CURRENTUSER", "/DIR=`"$installDir`"" `
+            -Wait
+          $cliCmd = Join-Path $installDir "bin\sshcnfgr.cmd"
+          if (-not (Test-Path $cliCmd)) { throw "CLI-Wrapper fehlt nach Installation: $cliCmd" }
+          & $cliCmd --version
+          if ($LASTEXITCODE -ne 0) { throw "Installierte CLI --version fehlgeschlagen" }
+          & $cliCmd --help | Out-Null
+          if ($LASTEXITCODE -ne 0) { throw "Installierte CLI --help fehlgeschlagen" }
+          $uninstaller = Join-Path $installDir "unins000.exe"
+          Start-Process -FilePath $uninstaller `
+            -ArgumentList "/VERYSILENT", "/SUPPRESSMSGBOXES", "/NORESTART" `
+            -Wait
+
+      - name: Upload Windows installer and Winget manifest artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: sshcnfgr-windows-x64
+          path: |
+            dist/SSHCnfgr-*-x64-setup.exe
+            dist/SSHCnfgr-*-x64-setup.SHA256SUMS.txt
+            dist/winget/**
+
+      - name: Attach Windows installer to GitHub Release
+        if: github.event_name == 'release' || inputs.release_tag != ''
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TARGET_TAG: ${{ github.event.release.tag_name || inputs.release_tag }}
+        run: |
+          $assets = @(
+            (Get-ChildItem dist/SSHCnfgr-*-x64-setup.exe | Select-Object -First 1).FullName,
+            (Get-ChildItem dist/SSHCnfgr-*-x64-setup.SHA256SUMS.txt | Select-Object -First 1).FullName
+          )
+          gh release upload $env:TARGET_TAG @assets --clobber
+
+  publish-winget:
+    name: Submit Winget manifest update
+    needs: build-windows-installer
+    if: github.event_name == 'release' && vars.ENABLE_WINGET_PUBLISH == 'true'
+    runs-on: windows-latest
+
+    steps:
+      - name: Submit update PR to microsoft/winget-pkgs
+        uses: vedantmgoyal9/winget-releaser@v2
+        with:
+          identifier: ThomsBe.SSHCnfgr
+          installers-regex: 'SSHCnfgr-.*-x64-setup\.exe$'
+          token: ${{ secrets.WINGET_TOKEN }}
